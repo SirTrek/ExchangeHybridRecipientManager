@@ -55,7 +55,7 @@ cd ExchangeHybridRecipientManager
 .\Create-Shortcut.ps1        # optional: puts a shortcut on your Desktop
 ```
 
-Then launch `Launch-ExchangeRecipientAdmin.bat`, or run the server directly:
+Then launch `Launch-ExchangeRecipientAdmin.bat`, Run .\Create-Shortcut.ps1 (to create a desktop shortcut), or run the server directly:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\Start-ExchangeRecipientAdminCenter.ps1
