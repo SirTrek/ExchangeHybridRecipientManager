@@ -34,6 +34,34 @@ $MIMEHASH = @{".avi" = "video/x-msvideo"; ".crt" = "application/x-x509-ca-cert";
 $HTML_SUCCESS = "<div class=`"alert alert-success d-flex align-items-center`" role=`"alert`">{result}</div>"
 $HTML_WARN = "<div class=`"alert alert-warning  d-flex align-items-center`" role=`"alert`">{result}</div>"
 
+# The mailbox types this tool can provision or convert to. Kept as a whitelist
+# because the value is used to pick a PARAMETER NAME, not just a value - a request
+# body is not allowed to name an arbitrary switch on an Exchange cmdlet.
+$ERAC_MailboxTypes = @("Regular", "Shared", "Room", "Equipment")
+
+function Resolve-RemoteMailboxType {
+    # Validates a submitted mailbox type and returns it in canonical casing, or
+    # $null if it is not one of the four. Comparison is case-insensitive so a
+    # hand-typed "shared" is accepted, but what comes back is always "Shared".
+    param([string]$Value)
+    $Trimmed = "$Value".Trim()
+    if (-not $Trimmed) { return $null }
+    return ($ERAC_MailboxTypes | Where-Object { $_ -eq $Trimmed } | Select-Object -First 1)
+}
+
+function ConvertTo-RemoteMailboxType {
+    # Get-RemoteMailbox reports RecipientTypeDetails in long form
+    # (RemoteSharedMailbox); Set-RemoteMailbox -Type takes the short form (Shared).
+    # Anything unrecognised maps to Regular, which is what an unconverted mailbox is.
+    param([string]$RecipientTypeDetails)
+    switch -Regex ("$RecipientTypeDetails") {
+        "Shared"    { return "Shared" }
+        "Room"      { return "Room" }
+        "Equipment" { return "Equipment" }
+        default     { return "Regular" }
+    }
+}
+
 function ConvertTo-SafeHtml {
     # Every value that reaches a template comes from Active Directory and can legally
     # contain " ' & < >. Substituted raw, a double quote truncates an input's value
@@ -175,6 +203,15 @@ function Get-RemoteMailboxEditPage {
         </tr>";
     }
 
+    # Mailbox type. The badge shows the raw RecipientTypeDetails because that is the
+    # authoritative on-prem value; the picker offers the short form -Type accepts.
+    $CurrentType = ConvertTo-RemoteMailboxType $Mailbox.RecipientTypeDetails
+    $HTMLROWS_TYPE = ""
+    foreach ($TypeName in $ERAC_MailboxTypes) {
+        $Sel = if ($TypeName -eq $CurrentType) { " selected" } else { "" }
+        $HTMLROWS_TYPE += "`n<option$Sel value=`"$TypeName`">$TypeName</option>"
+    }
+
     if ($Mailbox.HiddenFromAddressListsEnabled) {
         $HiddenBadgeClass = "text-bg-warning"
         $HiddenStatusText = "Hidden"
@@ -194,6 +231,8 @@ function Get-RemoteMailboxEditPage {
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{Alias}", (ConvertTo-SafeHtml $Mailbox.Alias))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{RemoteRoutingAddress}", (ConvertTo-SafeHtml $Mailbox.RemoteRoutingAddress))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{id}", $SafeId)
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{recipient_type_details}", (ConvertTo-SafeHtml $Mailbox.RecipientTypeDetails))
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_type} -->", $HTMLROWS_TYPE)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{hidden_badge_class}", $HiddenBadgeClass)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{hidden_status_text}", $HiddenStatusText)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{hidden_toggle_value}", $HiddenToggleValue)
@@ -232,6 +271,14 @@ function Get-RemoteMailboxListPage {
         $HTMLROWS_RRA += "`n<option$Sel value=`"$Domain`">$Domain</option>"
     }
 
+    # Rendered from the same whitelist the handler validates against, so the two
+    # cannot drift apart.
+    $HTMLROWS_MBXTYPE = ""
+    foreach ($TypeName in $ERAC_MailboxTypes) {
+        $Sel = if ($TypeName -eq "Regular") { " selected" } else { "" }
+        $HTMLROWS_MBXTYPE += "`n<option$Sel value=`"$TypeName`">$TypeName</option>"
+    }
+
     $HTMLROWS_MBX = ""
     foreach ($Item in (Get-RemoteMailbox | Select-Object DisplayName, PrimarySMTPAddress, RecipientTypeDetails, WhenChanged)) {
         $Href = ConvertTo-SafeHtml ([URI]::EscapeDataString([string]$Item.PrimarySMTPAddress))
@@ -250,6 +297,7 @@ function Get-RemoteMailboxListPage {
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_ad} -->", $HTMLROWS_AD)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_user} -->", $HTMLROWS_USERS)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_rra} -->", $HTMLROWS_RRA)
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_mailboxtype} -->", $HTMLROWS_MBXTYPE)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {result} -->", $ResultHtml)
     return $HTMLRESPONSE
 }
@@ -658,8 +706,29 @@ try {
                     try {
                         $NewPrimary = "$($Table['primarysmtpaddress_local'])@$($Table['primarysmtpaddress_accepteddomain'])"
                         $NewRouting = "$($Table['remoteroutingaddress_local'])@$($Table['remoteroutingaddress_accepteddomain'])"
-                        Enable-RemoteMailbox -Identity $Table['username'] -PrimarySMTPAddress $NewPrimary -RemoteRoutingAddress $NewRouting -ErrorAction Stop | Out-Null
-                        $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "User $(ConvertTo-SafeHtml $Table['username']) enabled as Remote Mailbox ($(ConvertTo-SafeHtml $NewPrimary))")
+
+                        # Mailbox type is expressed on Enable-RemoteMailbox as the
+                        # switches -Shared/-Room/-Equipment; Regular is the absence of
+                        # all three, so there is nothing to pass for it. Splatted rather
+                        # than built as a string, and validated against the whitelist
+                        # first, so a crafted request cannot name a different switch.
+                        $MailboxType = if ($Table.ContainsKey('mailboxtype')) { Resolve-RemoteMailboxType $Table['mailboxtype'] } else { "Regular" }
+                        if (-not $MailboxType) {
+                            throw "'$($Table['mailboxtype'])' is not a valid mailbox type. Choose one of: $($ERAC_MailboxTypes -join ', ')."
+                        }
+
+                        $EnableParams = @{
+                            Identity             = $Table['username']
+                            PrimarySMTPAddress   = $NewPrimary
+                            RemoteRoutingAddress = $NewRouting
+                            ErrorAction          = 'Stop'
+                        }
+                        if ($MailboxType -ne "Regular") { $EnableParams[$MailboxType] = $true }
+
+                        Enable-RemoteMailbox @EnableParams | Out-Null
+
+                        $TypeNote = if ($MailboxType -eq "Regular") { "" } else { " as a $($MailboxType.ToLower()) mailbox" }
+                        $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "User $(ConvertTo-SafeHtml $Table['username']) enabled as Remote Mailbox$TypeNote ($(ConvertTo-SafeHtml $NewPrimary))")
                     }
                     catch {
                         $HTML_RESULT = $HTML_WARN.Replace("{result}", (ConvertTo-SafeHtml $_.Exception.Message))
@@ -738,6 +807,20 @@ try {
                         "removealias" {
                             Set-RemoteMailbox -Identity $Identity -EmailAddresses @{Remove = $params['alias'] } -ErrorAction Stop
                             $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Removed alias $($params['alias'])")
+                            break
+                        }
+                        "changetype" {
+                            # Set-RemoteMailbox -Type writes msExchRemoteRecipientType on
+                            # the AD object. Converting in the Exchange Online admin centre
+                            # changes the cloud mailbox only and never touches AD, so the
+                            # two sides disagree until this runs.
+                            $NewType = Resolve-RemoteMailboxType $params['MailboxType']
+                            if (-not $NewType) {
+                                $HTML_RESULT = $HTML_WARN.Replace("{result}", "'$(ConvertTo-SafeHtml $params['MailboxType'])' is not a valid mailbox type. Choose one of: $($ERAC_MailboxTypes -join ', ').")
+                                break
+                            }
+                            Set-RemoteMailbox -Identity $Identity -Type $NewType -ErrorAction Stop
+                            $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Mailbox type set to $NewType in Active Directory. Exchange Online will not reflect it until the next directory sync.")
                             break
                         }
                         "togglehidden" {

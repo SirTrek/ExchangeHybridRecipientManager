@@ -53,18 +53,34 @@ $prelude = {
     function Get-RemoteMailbox {
         [CmdletBinding()] param([string]$Identity,[string]$Filter,$ResultSize)
         if ($Identity -and $Identity -notlike "*contoso.com*") { return $null }
+        # A second fixture that is already a shared mailbox, so the type picker's
+        # preselect is tested against something other than the default.
+        $Rtd = if ($Identity -like "*shared*") { "RemoteSharedMailbox" } else { "RemoteUserMailbox" }
         [pscustomobject]@{ Name=$DN;DisplayName=$DN;Alias="ob";PrimarySmtpAddress=$SMTP
-            RemoteRoutingAddress="ob@t.mail.onmicrosoft.com";RecipientTypeDetails="RemoteUserMailbox"
+            RemoteRoutingAddress="ob@t.mail.onmicrosoft.com";RecipientTypeDetails=$Rtd
             WhenChanged="2026-08-26";HiddenFromAddressListsEnabled=$false
             EmailAddresses=@("SMTP:$SMTP","smtp:o'brien.alt@contoso.com") } }
     function Set-RemoteMailbox {
         [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,$EmailAddresses,
             [bool]$HiddenFromAddressListsEnabled,[string]$DisplayName,[string]$Alias,
-            [string]$RemoteRoutingAddress,[string]$PrimarySmtpAddress) }
+            [string]$RemoteRoutingAddress,[string]$PrimarySmtpAddress,[string]$Type)
+        # Logged only when -Type is actually passed, so the every-other-call paths
+        # are unaffected and "the cmdlet was never reached" stays assertable.
+        if ($PSBoundParameters.ContainsKey('Type')) {
+            Add-Content -Path (Join-Path $env:TEMP "erac_setmbxtype_test.txt") -Value "$Identity|$Type"
+        } }
     function Enable-RemoteMailbox {
+        # -Archive is deliberately declared alongside the three type switches. It is a
+        # real parameter of the real cmdlet, so if the handler ever splatted a
+        # request-supplied name straight through, "mailboxtype=Archive" would quietly
+        # provision an archive here rather than failing - which is what makes the
+        # whitelist testable.
         [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,[string]$PrimarySMTPAddress,
-            [string]$RemoteRoutingAddress,[switch]$Archive)
-        Set-Content -Path (Join-Path $env:TEMP "erac_enable_test.txt") -Value "$PrimarySMTPAddress" }
+            [string]$RemoteRoutingAddress,[switch]$Archive,[switch]$Shared,[switch]$Room,[switch]$Equipment)
+        $fired = @()
+        foreach ($n in 'Archive','Shared','Room','Equipment') { if ($PSBoundParameters[$n]) { $fired += $n } }
+        $sw = if ($fired) { $fired -join '+' } else { 'none' }
+        Set-Content -Path (Join-Path $env:TEMP "erac_enable_test.txt") -Value "$PrimarySMTPAddress|$sw" }
     function Disable-RemoteMailbox {
         [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
 
@@ -223,7 +239,7 @@ Check "GET // does not echo the previous page" ($c.Body -ne $a.Body) "identical 
 Req GET "/remotemailboxes?username=u%40x.internal&primarysmtpaddress_local=a%3Db&primarysmtpaddress_accepteddomain=contoso.com&remoteroutingaddress_local=r&remoteroutingaddress_accepteddomain=t.mail.onmicrosoft.com" | Out-Null
 Start-Sleep -Milliseconds 300
 $got = (Get-Content (Join-Path $env:TEMP "erac_enable_test.txt") -EA SilentlyContinue)
-Check "'a=b' reaches Exchange intact as a=b@contoso.com" ($got -eq 'a=b@contoso.com') "Exchange got '$got'"
+Check "'a=b' reaches Exchange intact as a=b@contoso.com" ($got -eq 'a=b@contoso.com|none') "Exchange got '$got'"
 $x = Req GET "/remotemailboxes?foo=bar"
 Check "stray query no longer fires a provisioning attempt" ($x.Body -notmatch 'enabled as Remote Mailbox') "banner appeared"
 
@@ -457,6 +473,78 @@ try {
   Check "  picker says so instead of being silently empty" ($x.Body -match 'could not load groups') "no explanation offered"
   Check "  the group tables are unaffected" ($x.Body -match 'href="/editdistributiongroup\?id=') "group rows missing"
 } finally { Remove-Item $failFile -ErrorAction SilentlyContinue }
+
+"`n=== 19. Mailbox type: provisioning and converting ==="
+$enLog  = Join-Path $env:TEMP "erac_enable_test.txt"
+$typLog = Join-Path $env:TEMP "erac_setmbxtype_test.txt"
+foreach ($l in @($enLog,$typLog)) { if (Test-Path $l) { Remove-Item $l -Force } }
+
+$base4 = "primarysmtpaddress_local=hr&primarysmtpaddress_accepteddomain=contoso.com&remoteroutingaddress_local=hr&remoteroutingaddress_accepteddomain=t.mail.onmicrosoft.com"
+
+# the picker itself
+$x = Req GET "/remotemailboxes"
+Check "enable modal offers a mailbox type picker" ($x.Body -match '<select[^>]*name="mailboxtype"') "no type picker"
+Check "  offers all four types" (@('Regular','Shared','Room','Equipment' | Where-Object { $x.Body -match "<option[^>]*value=`"$_`"" }).Count -eq 4) "missing options"
+Check "  defaults to Regular" ($x.Body -match '<option selected value="Regular">') "Regular not preselected"
+
+# Regular must not pass a switch at all - there is no -Regular on the real cmdlet
+Req GET "/remotemailboxes?username=u%40x.internal&mailboxtype=Regular&$base4" | Out-Null
+Start-Sleep -Milliseconds 300
+Check "Regular passes no type switch" ((Get-Content $enLog -EA SilentlyContinue) -eq 'hr@contoso.com|none') "got '$(Get-Content $enLog -EA SilentlyContinue)'"
+
+# and each real type maps to its own switch
+foreach ($t in @('Shared','Room','Equipment')) {
+  Remove-Item $enLog -Force -EA SilentlyContinue
+  $x = Req GET "/remotemailboxes?username=u%40x.internal&mailboxtype=$t&$base4"
+  Start-Sleep -Milliseconds 300
+  Check "$t provisions with -$t" ((Get-Content $enLog -EA SilentlyContinue) -eq "hr@contoso.com|$t") "got '$(Get-Content $enLog -EA SilentlyContinue)'"
+  Check "  and the banner says so" ($x.Body -match "as a $($t.ToLower()) mailbox") "banner did not mention the type"
+}
+
+# omitting the field entirely still provisions a regular mailbox (back-compat)
+Remove-Item $enLog -Force -EA SilentlyContinue
+Req GET "/remotemailboxes?username=u%40x.internal&$base4" | Out-Null
+Start-Sleep -Milliseconds 300
+Check "a request with no type field still works" ((Get-Content $enLog -EA SilentlyContinue) -eq 'hr@contoso.com|none') "got '$(Get-Content $enLog -EA SilentlyContinue)'"
+
+# the type names a PARAMETER, so an arbitrary one must not reach the cmdlet.
+# -Archive is real: without the whitelist this would silently provision an archive.
+foreach ($bad in @('Archive','Bogus')) {
+  Remove-Item $enLog -Force -EA SilentlyContinue
+  $x = Req GET "/remotemailboxes?username=u%40x.internal&mailboxtype=$bad&$base4"
+  Start-Sleep -Milliseconds 300
+  Check "'$bad' is refused as a mailbox type" ($x.Body -match 'is not a valid mailbox type') "no refusal banner"
+  Check "  and never reaches Exchange" (-not (Test-Path $enLog)) "Enable-RemoteMailbox ran: $(Get-Content $enLog -EA SilentlyContinue)"
+}
+
+# edit page: current type shown, picker preselected from it
+$x = Req GET "/editremotemailbox?id=o%27brien%40contoso.com"
+Check "edit page shows the AD recipient type" ($x.Body -match 'RemoteUserMailbox') "type not displayed"
+Check "  picker preselects Regular for a user mailbox" ($x.Body -match '<option selected value="Regular">') "wrong preselect"
+$x = Req GET "/editremotemailbox?id=shared%40contoso.com"
+Check "  and preselects Shared for a shared mailbox" ($x.Body -match '<option selected value="Shared">') "wrong preselect"
+Check "  showing the long form in the badge" ($x.Body -match 'RemoteSharedMailbox') "badge not updated"
+
+# converting
+$x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=changetype&MailboxType=Shared"
+Start-Sleep -Milliseconds 200
+Check "changetype calls Set-RemoteMailbox -Type Shared" (@(Get-Content $typLog -EA SilentlyContinue) -contains "o'brien@contoso.com|Shared") "got: $(Get-Content $typLog -EA SilentlyContinue)"
+Check "  and says the sync is still pending" ($x.Body -match 'directory sync') "no sync caveat shown"
+
+Remove-Item $typLog -Force -EA SilentlyContinue
+$x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=changetype&MailboxType=Nonsense"
+Start-Sleep -Milliseconds 200
+Check "an invalid type is refused on convert too" ($x.Body -match 'is not a valid mailbox type') "no refusal banner"
+Check "  and never reaches Exchange" (-not (Test-Path $typLog)) "Set-RemoteMailbox ran: $(Get-Content $typLog -EA SilentlyContinue)"
+Check "  refusal still renders the edit page" ($x.Status -eq 200 -and $x.Body -match 'name="MailboxType"') "page broken"
+
+# casing is the operator's, canonical casing is ours
+Remove-Item $typLog -Force -EA SilentlyContinue
+Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=changetype&MailboxType=shared" | Out-Null
+Start-Sleep -Milliseconds 200
+Check "lower-case 'shared' is canonicalised to Shared" (@(Get-Content $typLog -EA SilentlyContinue) -contains "o'brien@contoso.com|Shared") "got: $(Get-Content $typLog -EA SilentlyContinue)"
+
+foreach ($l in @($enLog,$typLog)) { if (Test-Path $l) { Remove-Item $l -Force } }
 
 "`n================ $pass passed, $fail failed ================"
 try{Invoke-WebRequest "$base/exit" -UseBasicParsing -TimeoutSec 5|Out-Null}catch{}

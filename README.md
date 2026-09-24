@@ -29,7 +29,7 @@ server. This puts a web UI on top of those cmdlets.
 
 | Section | Actions |
 |---|---|
-| **Remote Mailboxes** | Enable a mailbox for an existing AD user; edit display name, alias and remote routing address; add and remove proxy addresses; hide from or show in the GAL; disable the remote mailbox |
+| **Remote Mailboxes** | Enable a mailbox for an existing AD user as regular, shared, room or equipment; convert an existing mailbox between those types; edit display name, alias and remote routing address; add and remove proxy addresses; hide from or show in the GAL; disable the remote mailbox |
 | **Distribution Groups** | Create a group; mail-enable an existing AD group; edit display name and alias; mail-disable (keeps the AD group); delete |
 | **Contacts** | Create, edit external address and display name, delete |
 | **Email Address Policies** | Create with an address template, change priority and recipient filter, delete |
@@ -38,6 +38,20 @@ server. This puts a web UI on top of those cmdlets.
 Every list page has live search and sortable columns. Destructive actions sit behind a
 type-to-confirm control that is **re-verified server-side** — the browser guard is treated
 as a convenience, not a control.
+
+## Shared, room and equipment mailboxes
+
+Pick the type in the **Enable remote mailbox** dialog and it is passed to
+`Enable-RemoteMailbox` as `-Shared`, `-Room` or `-Equipment`. Shared, room and equipment
+mailboxes need no licence under 50 GB; disable the backing AD account afterwards so nobody
+can sign in as the mailbox.
+
+Each mailbox's edit page also has a **Mailbox Type** card that calls
+`Set-RemoteMailbox -Type`. That exists because converting a mailbox in the Exchange Online
+admin centre changes the *cloud* mailbox only: the type lives in `msExchRemoteRecipientType`
+on the on-premises AD object, which the cloud-side change never touches. Until both sides are
+set, `Get-RemoteMailbox` keeps reporting the old type and anything driven off those
+attributes disagrees with what Exchange Online is actually serving.
 
 ## Requirements
 
@@ -79,7 +93,7 @@ where you actually want to work.
 .\Test-ExchangeRecipientAdminCenter.ps1
 ```
 
-102 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
+127 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
 every route over real HTTP, so the whole request path is exercised rather than mocked. It
 needs no Exchange, no Active Directory and no admin rights, and it never issues an LDAP query
 — it is safe to run on the management box itself.

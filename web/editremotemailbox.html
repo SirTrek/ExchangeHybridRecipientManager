@@ -132,6 +132,35 @@
           </div>
 
           <div class="card mb-4">
+            <div class="card-header">Mailbox Type</div>
+            <div class="card-body">
+              <p class="mb-3">Active Directory records this mailbox as
+                <span class="badge text-bg-secondary">{recipient_type_details}</span>.
+              </p>
+              <form method="post" action="/editremotemailbox"
+                class="row g-2 align-items-center">
+                <input type="hidden" name="id" value="{id}">
+                <input type="hidden" name="Action" value="changetype">
+                <div class="col-auto">
+                  <label for="MailboxType" class="visually-hidden">Mailbox type</label>
+                  <select class="form-select" id="MailboxType" name="MailboxType">
+                    <!-- {row_type} -->
+                  </select>
+                </div>
+                <div class="col-auto">
+                  <button type="submit" class="btn btn-outline-secondary">Change
+                    type</button>
+                </div>
+              </form>
+              <div class="form-text mt-3">Converting a mailbox in the Exchange Online
+                admin centre changes the cloud mailbox only &mdash; Active Directory
+                keeps reporting the old type, and so does this page. Set it here as
+                well so both sides agree. The change reaches Exchange Online on the
+                next directory sync.</div>
+            </div>
+          </div>
+
+          <div class="card mb-4">
             <div class="card-header">Hidden from Address Lists</div>
             <div class="card-body d-flex align-items-center">
               <span class="badge {hidden_badge_class} me-2">{hidden_status_text}</span>
