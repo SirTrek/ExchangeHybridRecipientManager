@@ -122,6 +122,38 @@ $prelude = {
     # a plain function stub would not work, because dot-sourcing the app defines the
     # real one afterwards and wins. The sentinel file drives the degraded path; an
     # environment variable would not, since the server runs in a separate process.
+    # New-RemoteMailbox with the REAL parameter sets. -UserPrincipalName and
+    # -Password are mandatory in the Regular set and absent from the type sets,
+    # exactly as Get-Command -Syntax reports on Exchange 2019. A call that named no
+    # type would therefore fail to resolve a parameter set here, just as it would
+    # against Exchange - which is the point of declaring the sets rather than a flat
+    # list of optional parameters.
+    function New-RemoteMailbox {
+        [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName='Regular')]
+        param(
+            [Parameter(Mandatory, Position=0)][string]$Name,
+            [Parameter(Mandatory, ParameterSetName='Regular')][string]$UserPrincipalName,
+            [Parameter(Mandatory, ParameterSetName='Regular')][securestring]$Password,
+            [Parameter(Mandatory, ParameterSetName='Shared')][switch]$Shared,
+            [Parameter(Mandatory, ParameterSetName='Room')][switch]$Room,
+            [Parameter(Mandatory, ParameterSetName='Equipment')][switch]$Equipment,
+            [string]$PrimarySmtpAddress,[string]$RemoteRoutingAddress,
+            [string]$DisplayName,[string]$Alias,[string]$OnPremisesOrganizationalUnit)
+        $kind = if ($Shared) { 'Shared' } elseif ($Room) { 'Room' } elseif ($Equipment) { 'Equipment' } else { 'Regular' }
+        $dn = if ($PSBoundParameters.ContainsKey('DisplayName')) { $DisplayName } else { '<omitted>' }
+        $al = if ($PSBoundParameters.ContainsKey('Alias')) { $Alias } else { '<omitted>' }
+        $ou = if ($PSBoundParameters.ContainsKey('OnPremisesOrganizationalUnit')) { $OnPremisesOrganizationalUnit } else { '<omitted>' }
+        Add-Content -Path (Join-Path $env:TEMP "erac_newmbx_test.txt") -Value "$Name|$kind|$PrimarySmtpAddress|$RemoteRoutingAddress|dn=$dn|alias=$al|ou=$ou" }
+
+    # Same override seam as the groups one, driven by the same kind of sentinel.
+    $ERAC_OuLookup = {
+        if (Test-Path (Join-Path $env:TEMP "erac_ous_fail.txt")) {
+            throw "A referral was returned from the server."
+        }
+        @([pscustomobject]@{ Name = "Contoso / Shared Mailboxes"; Dn = "OU=Shared Mailboxes,OU=Contoso,DC=contoso,DC=com" },
+          [pscustomobject]@{ Name = "Contoso / Staff"; Dn = "OU=Staff,OU=Contoso,DC=contoso,DC=com" })
+    }
+
     $ERAC_GroupLookup = {
         if (Test-Path (Join-Path $env:TEMP "erac_groups_fail.txt")) {
             throw "The term 'Get-Group' is not recognized as the name of a cmdlet."
@@ -195,6 +227,7 @@ $prelude = {
 }
 
 Remove-Item (Join-Path $env:TEMP "erac_groups_fail.txt") -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $env:TEMP "erac_ous_fail.txt") -ErrorAction SilentlyContinue
 $job = Start-Job -ScriptBlock $prelude -ArgumentList $script,$Port
 foreach($i in 1..40){Start-Sleep -m 400; try{Invoke-WebRequest "$base/" -UseBasicParsing -TimeoutSec 3|Out-Null;break}catch{}}
 
@@ -545,6 +578,182 @@ Start-Sleep -Milliseconds 200
 Check "lower-case 'shared' is canonicalised to Shared" (@(Get-Content $typLog -EA SilentlyContinue) -contains "o'brien@contoso.com|Shared") "got: $(Get-Content $typLog -EA SilentlyContinue)"
 
 foreach ($l in @($enLog,$typLog)) { if (Test-Path $l) { Remove-Item $l -Force } }
+
+"`n=== 20. Grant-SharedMailboxAccess (standalone Exchange Online script) ==="
+# Run in a child scope with stubs that declare each EXO cmdlet's REAL parameters
+# and nothing else, so calling one with a parameter it does not have fails here
+# rather than in the tenant. Send As in particular is Add-RecipientPermission
+# -Trustee, not Add-MailboxPermission -User; the two are easy to conflate and
+# permissive stubs would hide it.
+$permScript = Join-Path $PSScriptRoot "Grant-SharedMailboxAccess.ps1"
+Check "the script is present in the repo" (Test-Path $permScript) "Grant-SharedMailboxAccess.ps1 missing"
+
+function Invoke-PermScript {
+    param([hashtable]$Params, [string]$Rtd = "SharedMailbox", [string[]]$KnownUsers = @("bob@contoso.com","sue@contoso.com"))
+    $permLog = [System.Collections.ArrayList]::new()
+    $script:permErr = ""
+    & {
+        function Get-ConnectionInformation { [pscustomobject]@{State="Connected";UserPrincipalName="admin@contoso.com"} }
+        function Connect-ExchangeOnline { [CmdletBinding()] param([switch]$ShowBanner) [void]$permLog.Add("CONNECT") }
+        function Get-Mailbox {
+            [CmdletBinding()] param([string]$Identity)
+            if ($Identity -notlike "*@contoso.com") { return $null }
+            [pscustomobject]@{PrimarySmtpAddress=$Identity;RecipientTypeDetails=$Rtd} }
+        function Get-Recipient {
+            [CmdletBinding()] param([string]$Identity)
+            if ($KnownUsers -notcontains $Identity) { return $null }
+            [pscustomobject]@{PrimarySmtpAddress=$Identity} }
+        function Add-MailboxPermission {
+            [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,[string]$User,[string[]]$AccessRights,[bool]$AutoMapping)
+            [void]$permLog.Add("Add-MailboxPermission|$Identity|$User|$($AccessRights -join ',')|automap=$AutoMapping") }
+        function Remove-MailboxPermission {
+            [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,[string]$User,[string[]]$AccessRights)
+            [void]$permLog.Add("Remove-MailboxPermission|$Identity|$User|$($AccessRights -join ',')") }
+        function Add-RecipientPermission {
+            [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,[string]$Trustee,[string[]]$AccessRights)
+            [void]$permLog.Add("Add-RecipientPermission|$Identity|$Trustee|$($AccessRights -join ',')") }
+        function Remove-RecipientPermission {
+            [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,[string]$Trustee,[string[]]$AccessRights)
+            [void]$permLog.Add("Remove-RecipientPermission|$Identity|$Trustee|$($AccessRights -join ',')") }
+        function Set-Mailbox {
+            [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,$GrantSendOnBehalfTo)
+            $op = if ($GrantSendOnBehalfTo.ContainsKey('Add')) { "Add=$($GrantSendOnBehalfTo['Add'])" } else { "Remove=$($GrantSendOnBehalfTo['Remove'])" }
+            [void]$permLog.Add("Set-Mailbox|$Identity|$op") }
+        try { & $permScript @Params -NoConnect 3>$null 6>$null | Out-Null }
+        catch { $script:permErr = $_.Exception.Message }
+    }
+    return ,@($permLog)
+}
+
+# at least one right is mandatory - Full Access alone is not implied
+Invoke-PermScript -Params @{Mailbox="hr@contoso.com";User="bob@contoso.com"} | Out-Null
+Check "no right named -> refused, nothing called" ($permErr -match 'at least one of' -and $permLog.Count -eq 0) "err='$permErr' log=$($permLog -join ';')"
+
+# Full Access
+$pl = Invoke-PermScript -Params @{Mailbox="hr@contoso.com";User="bob@contoso.com";FullAccess=$true}
+Check "FullAccess -> Add-MailboxPermission" ($pl -contains "Add-MailboxPermission|hr@contoso.com|bob@contoso.com|FullAccess|automap=True") "got: $($pl -join ' ; ')"
+Check "  and does NOT also grant SendAs" (-not ($pl -match 'RecipientPermission')) "SendAs granted without being asked for"
+
+# -AutoMapping:$false must actually reach the cmdlet
+$pl = Invoke-PermScript -Params @{Mailbox="hr@contoso.com";User="bob@contoso.com";FullAccess=$true;AutoMapping=$false}
+Check "-AutoMapping:`$false is passed through" ($pl -contains "Add-MailboxPermission|hr@contoso.com|bob@contoso.com|FullAccess|automap=False") "got: $($pl -join ' ; ')"
+
+# Send As is a DIFFERENT cmdlet with a DIFFERENT parameter name
+$pl = Invoke-PermScript -Params @{Mailbox="hr@contoso.com";User="bob@contoso.com";SendAs=$true}
+Check "SendAs -> Add-RecipientPermission -Trustee" ($pl -contains "Add-RecipientPermission|hr@contoso.com|bob@contoso.com|SendAs") "got: $($pl -join ' ; ')"
+Check "  and not Add-MailboxPermission" (-not ($pl -match 'Add-MailboxPermission')) "SendAs went to the wrong cmdlet"
+
+# Send on Behalf edits the mailbox property without clobbering other delegates
+$pl = Invoke-PermScript -Params @{Mailbox="hr@contoso.com";User="bob@contoso.com";SendOnBehalf=$true}
+Check "SendOnBehalf uses the Add hashtable form" ($pl -contains "Set-Mailbox|hr@contoso.com|Add=bob@contoso.com") "got: $($pl -join ' ; ')"
+
+# all three at once, for two people
+$pl = Invoke-PermScript -Params @{Mailbox="hr@contoso.com";User=@("bob@contoso.com","sue@contoso.com");FullAccess=$true;SendAs=$true;SendOnBehalf=$true}
+Check "three rights x two users = six calls" ($pl.Count -eq 6) "got $($pl.Count): $($pl -join ' ; ')"
+Check "  sue got Full Access too" ($pl -contains "Add-MailboxPermission|hr@contoso.com|sue@contoso.com|FullAccess|automap=True") "got: $($pl -join ' ; ')"
+
+# revoking uses the Remove-* cmdlets, not the Add-* ones
+$pl = Invoke-PermScript -Params @{Mailbox="hr@contoso.com";User="bob@contoso.com";FullAccess=$true;SendAs=$true;SendOnBehalf=$true;Remove=$true}
+Check "-Remove revokes Full Access" ($pl -contains "Remove-MailboxPermission|hr@contoso.com|bob@contoso.com|FullAccess") "got: $($pl -join ' ; ')"
+Check "  revokes SendAs" ($pl -contains "Remove-RecipientPermission|hr@contoso.com|bob@contoso.com|SendAs") "got: $($pl -join ' ; ')"
+Check "  revokes SendOnBehalf with Remove=" ($pl -contains "Set-Mailbox|hr@contoso.com|Remove=bob@contoso.com") "got: $($pl -join ' ; ')"
+Check "  and grants nothing" (-not ($pl -match '^Add-')) "an Add- cmdlet ran during a revoke"
+
+# a typo in the mailbox fails before anything is changed
+$pl = Invoke-PermScript -Params @{Mailbox="typo@nowhere.test";User="bob@contoso.com";FullAccess=$true}
+Check "unknown mailbox -> nothing is changed" ($pl.Count -eq 0 -and $permErr -match 'No mailbox in Exchange Online matched') "err='$permErr' log=$($pl -join ';')"
+
+# one bad user does not abandon the rest of the list
+$pl = Invoke-PermScript -Params @{Mailbox="hr@contoso.com";User=@("ghost@contoso.com","bob@contoso.com");FullAccess=$true}
+Check "unknown user is skipped, the rest still processed" ($pl.Count -eq 1 -and $pl -contains "Add-MailboxPermission|hr@contoso.com|bob@contoso.com|FullAccess|automap=True") "got: $($pl -join ' ; ')"
+
+# -WhatIf must be inert
+$pl = Invoke-PermScript -Params @{Mailbox="hr@contoso.com";User="bob@contoso.com";FullAccess=$true;SendAs=$true;WhatIf=$true}
+Check "-WhatIf changes nothing" ($pl.Count -eq 0) "got: $($pl -join ' ; ')"
+
+# a non-shared target is a warning, not a refusal
+$pl = Invoke-PermScript -Params @{Mailbox="hr@contoso.com";User="bob@contoso.com";FullAccess=$true} -Rtd "UserMailbox"
+Check "a non-shared mailbox still works (warns only)" ($pl.Count -eq 1) "got: $($pl -join ' ; ')"
+
+"`n=== 21. Creating a new shared mailbox (New-RemoteMailbox) ==="
+$nmLog = Join-Path $env:TEMP "erac_newmbx_test.txt"
+if (Test-Path $nmLog) { Remove-Item $nmLog -Force }
+$nmBody = "name=HR+Shared&primarysmtpaddress_local=hr&primarysmtpaddress_accepteddomain=contoso.com&remoteroutingaddress_local=hr&remoteroutingaddress_accepteddomain=t.mail.onmicrosoft.com"
+
+$x = Req GET "/remotemailboxes"
+Check "list page offers New shared mailbox" ($x.Body -match 'data-bs-target="#newMailbox"') "no button"
+Check "  the modal posts to /newremotemailbox" ($x.Body -match 'action="/newremotemailbox"') "modal missing or wrong action"
+Check "  and posts rather than gets (keeps fields out of the log)" ($x.Body -match '<form method="post" action="/newremotemailbox"') "form is not POST"
+Check "  type picker offers Shared, Room, Equipment" (($x.Body -match 'name="mailboxtype"[\s\S]{0,400}?value="Shared"') -and ($x.Body -match 'value="Equipment"')) "types missing"
+Check "  and does NOT offer Regular for creation" ($x.Body -notmatch '<select[^>]*id="new_mailboxtype"[\s\S]{0,400}?value="Regular"') "Regular offered - it needs a password"
+Check "  OU picker is populated" ($x.Body -match '<option value="OU=Shared Mailboxes,OU=Contoso,DC=contoso,DC=com">') "no OUs"
+Check "  with a default-container option" ($x.Body -match 'domain default container') "no blank option"
+
+# the happy path
+$x = Req POST "/newremotemailbox" "$nmBody&mailboxtype=Shared"
+Start-Sleep -Milliseconds 250
+$got = @(Get-Content $nmLog -EA SilentlyContinue)
+Check "creates a shared mailbox" ($got -contains "HR Shared|Shared|hr@contoso.com|hr@t.mail.onmicrosoft.com|dn=<omitted>|alias=<omitted>|ou=<omitted>") "got: $($got -join ' ; ')"
+Check "  blank optionals are omitted, not sent empty" ($got -notmatch 'dn=\|') "an empty string was passed"
+Check "  banner warns the cloud lags" ($x.Body -match 'directory sync') "no sync caveat"
+Check "  and points at the permissions script" ($x.Body -match 'Grant-SharedMailboxAccess') "no pointer to the access step"
+
+# optionals actually reach the cmdlet when supplied
+Remove-Item $nmLog -Force -EA SilentlyContinue
+Req POST "/newremotemailbox" "$nmBody&mailboxtype=Shared&displayname=HR+Team&alias=hrteam&ou=OU%3DStaff%2COU%3DContoso%2CDC%3Dcontoso%2CDC%3Dcom" | Out-Null
+Start-Sleep -Milliseconds 250
+$got = @(Get-Content $nmLog -EA SilentlyContinue)
+Check "display name, alias and OU are passed through" ($got -contains "HR Shared|Shared|hr@contoso.com|hr@t.mail.onmicrosoft.com|dn=HR Team|alias=hrteam|ou=OU=Staff,OU=Contoso,DC=contoso,DC=com") "got: $($got -join ' ; ')"
+
+# room and equipment
+foreach ($t in @('Room','Equipment')) {
+  Remove-Item $nmLog -Force -EA SilentlyContinue
+  Req POST "/newremotemailbox" "$nmBody&mailboxtype=$t" | Out-Null
+  Start-Sleep -Milliseconds 250
+  Check "$t mailboxes can be created too" (@(Get-Content $nmLog -EA SilentlyContinue) -contains "HR Shared|$t|hr@contoso.com|hr@t.mail.onmicrosoft.com|dn=<omitted>|alias=<omitted>|ou=<omitted>") "got: $(Get-Content $nmLog -EA SilentlyContinue)"
+}
+
+# Regular needs a password, which this tool never handles - it must be refused
+# here rather than reaching a cmdlet that would fail to resolve a parameter set.
+foreach ($bad in @('Regular','Archive','nonsense')) {
+  Remove-Item $nmLog -Force -EA SilentlyContinue
+  $x = Req POST "/newremotemailbox" "$nmBody&mailboxtype=$bad"
+  Start-Sleep -Milliseconds 250
+  Check "'$bad' is refused for creation" ($x.Body -match 'can be created here') "no refusal banner"
+  Check "  and never reaches Exchange" (-not (Test-Path $nmLog)) "New-RemoteMailbox ran: $(Get-Content $nmLog -EA SilentlyContinue)"
+}
+Check "  the refusal explains the password rule" ($x.Body -match 'Password') "no explanation of why"
+
+# required fields
+foreach ($case in @(
+  @{b="mailboxtype=Shared&primarysmtpaddress_local=hr&primarysmtpaddress_accepteddomain=contoso.com&remoteroutingaddress_local=hr&remoteroutingaddress_accepteddomain=t.mail.onmicrosoft.com"; m='Name is required'; n='a missing name'},
+  @{b="name=X&mailboxtype=Shared&primarysmtpaddress_accepteddomain=contoso.com&remoteroutingaddress_local=hr&remoteroutingaddress_accepteddomain=t.mail.onmicrosoft.com"; m='Primary SMTP address is required'; n='a missing primary address'},
+  @{b="name=X&mailboxtype=Shared&primarysmtpaddress_local=hr&primarysmtpaddress_accepteddomain=contoso.com&remoteroutingaddress_accepteddomain=t.mail.onmicrosoft.com"; m='Remote routing address is required'; n='a missing routing address'})) {
+  Remove-Item $nmLog -Force -EA SilentlyContinue
+  $x = Req POST "/newremotemailbox" $case.b
+  Start-Sleep -Milliseconds 250
+  Check "$($case.n) is refused" ($x.Body -match $case.m) "banner did not say so"
+  Check "  and nothing is created" (-not (Test-Path $nmLog)) "New-RemoteMailbox ran anyway"
+}
+
+# a=b in the local part must not become a delimiter, same bug class as section 4
+Remove-Item $nmLog -Force -EA SilentlyContinue
+$x = Req POST "/newremotemailbox" "name=X&mailboxtype=Shared&primarysmtpaddress_local=a%3Db&primarysmtpaddress_accepteddomain=contoso.com&remoteroutingaddress_local=hr&remoteroutingaddress_accepteddomain=t.mail.onmicrosoft.com"
+Start-Sleep -Milliseconds 250
+Check "'a=b' survives the POST body intact" (@(Get-Content $nmLog -EA SilentlyContinue) -match 'a=b@contoso\.com') "got: $(Get-Content $nmLog -EA SilentlyContinue)"
+
+# the page must survive the OU lookup failing, like the group picker does
+$ouFail = Join-Path $env:TEMP "erac_ous_fail.txt"
+Set-Content -Path $ouFail -Value "1"
+try {
+  $x = Req GET "/remotemailboxes"
+  Check "page still renders when the OU lookup fails" ($x.Status -eq 200 -and $x.Body.Length -gt 2000) "status=$($x.Status)"
+  Check "  starts with the doctype (no leaked log line)" ($x.Body.TrimStart().StartsWith('<!doctype')) "starts with: '$($x.Body.Substring(0,[Math]::Min(80,$x.Body.Length)) -replace '\s+',' ')'"
+  Check "  the failure is not rendered into the markup" ($x.Body -notmatch 'A referral was returned') "the LDAP error text reached the page"
+  Check "  picker says so instead of being silently empty" ($x.Body -match 'could not load OUs') "no explanation offered"
+} finally { Remove-Item $ouFail -Force -EA SilentlyContinue }
+
+if (Test-Path $nmLog) { Remove-Item $nmLog -Force }
 
 "`n================ $pass passed, $fail failed ================"
 try{Invoke-WebRequest "$base/exit" -UseBasicParsing -TimeoutSec 5|Out-Null}catch{}

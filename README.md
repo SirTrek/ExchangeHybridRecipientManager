@@ -29,7 +29,7 @@ server. This puts a web UI on top of those cmdlets.
 
 | Section | Actions |
 |---|---|
-| **Remote Mailboxes** | Enable a mailbox for an existing AD user as regular, shared, room or equipment; convert an existing mailbox between those types; edit display name, alias and remote routing address; add and remove proxy addresses; hide from or show in the GAL; disable the remote mailbox |
+| **Remote Mailboxes** | Create a new shared, room or equipment mailbox (AD object and mailbox together); enable a mailbox for an existing AD user as regular, shared, room or equipment; convert an existing mailbox between those types; edit display name, alias and remote routing address; add and remove proxy addresses; hide from or show in the GAL; disable the remote mailbox |
 | **Distribution Groups** | Create a group; mail-enable an existing AD group; edit display name and alias; mail-disable (keeps the AD group); delete |
 | **Contacts** | Create, edit external address and display name, delete |
 | **Email Address Policies** | Create with an address template, change priority and recipient filter, delete |
@@ -41,10 +41,22 @@ as a convenience, not a control.
 
 ## Shared, room and equipment mailboxes
 
-Pick the type in the **Enable remote mailbox** dialog and it is passed to
-`Enable-RemoteMailbox` as `-Shared`, `-Room` or `-Equipment`. Shared, room and equipment
-mailboxes need no licence under 50 GB; disable the backing AD account afterwards so nobody
-can sign in as the mailbox.
+There are two entry points, and they are not interchangeable:
+
+- **New shared mailbox** calls `New-RemoteMailbox`, which creates the Active Directory
+  object *and* its remote mailbox together. Use this when no AD account exists yet.
+- **Enable remote mailbox** calls `Enable-RemoteMailbox`, which mail-enables an account you
+  already have. It cannot create one, so it is no use for a brand-new shared mailbox.
+
+Only shared, room and equipment mailboxes can be created from the UI. `New-RemoteMailbox`
+makes `-UserPrincipalName` and `-Password` mandatory in its *Regular* parameter set and
+optional in the other three, and this tool deliberately never handles a password — the
+enable form is a GET and every request's full query string is written to the console and the
+in-memory log. For a regular mailbox, create the AD user however you normally do and then use
+**Enable remote mailbox**.
+
+Shared, room and equipment mailboxes need no licence under 50 GB. Disable the backing AD
+account so nobody can sign in as the mailbox.
 
 Each mailbox's edit page also has a **Mailbox Type** card that calls
 `Set-RemoteMailbox -Type`. That exists because converting a mailbox in the Exchange Online
@@ -52,6 +64,34 @@ admin centre changes the *cloud* mailbox only: the type lives in `msExchRemoteRe
 on the on-premises AD object, which the cloud-side change never touches. Until both sides are
 set, `Get-RemoteMailbox` keeps reporting the old type and anything driven off those
 attributes disagrees with what Exchange Online is actually serving.
+
+## Granting access to a shared mailbox
+
+Not in the web UI, and not an oversight. Full Access, Send As and Send on Behalf for a
+mailbox that lives in Exchange Online are stored **in Exchange Online**; Entra Connect does
+not sync mailbox permissions upward, and the Recipient Management snap-in has no
+`Add-MailboxPermission` or `Add-RecipientPermission` to call. Holding a live Exchange Online
+session inside a web app that binds to localhost with no authentication would also extend
+that unauthenticated surface across the whole tenant.
+
+So it ships as a separate script you run from a prompt:
+
+```powershell
+.\Grant-SharedMailboxAccess.ps1 -Mailbox hr@contoso.com -User bob@contoso.com -FullAccess -SendAs
+.\Grant-SharedMailboxAccess.ps1 -Mailbox hr@contoso.com -User bob@contoso.com,sue@contoso.com -FullAccess -AutoMapping:$false
+.\Grant-SharedMailboxAccess.ps1 -Mailbox hr@contoso.com -User bob@contoso.com -FullAccess -SendAs -Remove
+```
+
+It reuses an existing `Connect-ExchangeOnline` session if there is one, supports `-WhatIf`,
+applies each right independently so one refusal doesn't abandon the rest, and skips unknown
+recipients with a warning rather than failing the batch. The three rights are separate:
+Full Access alone does **not** let anyone send as the mailbox. `-AutoMapping:$false` is worth
+knowing for mailboxes with many delegates, where Outlook auto-mounting is a common cause of
+slow profiles; changing it later needs the permission removed and re-added, as Exchange does
+not update it in place.
+
+A newly created mailbox will not be visible to this script until directory sync has run and
+Exchange Online has provisioned it.
 
 ## Requirements
 
@@ -93,7 +133,7 @@ where you actually want to work.
 .\Test-ExchangeRecipientAdminCenter.ps1
 ```
 
-127 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
+177 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
 every route over real HTTP, so the whole request path is exercised rather than mocked. It
 needs no Exchange, no Active Directory and no admin rights, and it never issues an LDAP query
 — it is safe to run on the management box itself.

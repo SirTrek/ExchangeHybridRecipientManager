@@ -39,6 +39,14 @@ $HTML_WARN = "<div class=`"alert alert-warning  d-flex align-items-center`" role
 # body is not allowed to name an arbitrary switch on an Exchange cmdlet.
 $ERAC_MailboxTypes = @("Regular", "Shared", "Room", "Equipment")
 
+# The subset this tool will CREATE. New-RemoteMailbox makes -UserPrincipalName and
+# -Password mandatory in its Regular parameter set, and optional in the Shared, Room
+# and Equipment sets. This app never handles a password - the enable form is a GET,
+# and every request's full PathAndQuery is written to the console and the weblog - so
+# it only creates the three types that need no credentials. A regular mailbox is made
+# by creating the AD user however you normally do, then using Enable Remote Mailbox.
+$ERAC_CreatableMailboxTypes = @("Shared", "Room", "Equipment")
+
 function Resolve-RemoteMailboxType {
     # Validates a submitted mailbox type and returns it in canonical casing, or
     # $null if it is not one of the four. Comparison is case-insensitive so a
@@ -279,6 +287,26 @@ function Get-RemoteMailboxListPage {
         $HTMLROWS_MBXTYPE += "`n<option$Sel value=`"$TypeName`">$TypeName</option>"
     }
 
+    $HTMLROWS_NEWTYPE = ""
+    foreach ($TypeName in $ERAC_CreatableMailboxTypes) {
+        $Sel = if ($TypeName -eq "Shared") { " selected" } else { "" }
+        $HTMLROWS_NEWTYPE += "`n<option$Sel value=`"$TypeName`">$TypeName</option>"
+    }
+
+    # Optional: blank means Exchange puts the object in the domain's default
+    # container. A directory that cannot be reached must not break the page, so the
+    # picker degrades to a note the same way the mail-enable one does.
+    $HTMLROWS_OU = "`n<option value=`"`">(domain default container)</option>"
+    try {
+        foreach ($Ou in (@(Get-OrganizationalUnitCandidate) | Sort-Object Name)) {
+            $HTMLROWS_OU += "`n<option value=`"$(ConvertTo-SafeHtml $Ou.Dn)`">$(ConvertTo-SafeHtml $Ou.Name)</option>"
+        }
+    }
+    catch {
+        Write-Host "$(Get-Date -Format s) Could not enumerate OUs for the new-mailbox picker: $($_.Exception.Message)"
+        $HTMLROWS_OU = "`n<option value=`"`">(could not load OUs - see the console window)</option>"
+    }
+
     $HTMLROWS_MBX = ""
     foreach ($Item in (Get-RemoteMailbox | Select-Object DisplayName, PrimarySMTPAddress, RecipientTypeDetails, WhenChanged)) {
         $Href = ConvertTo-SafeHtml ([URI]::EscapeDataString([string]$Item.PrimarySMTPAddress))
@@ -298,6 +326,8 @@ function Get-RemoteMailboxListPage {
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_user} -->", $HTMLROWS_USERS)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_rra} -->", $HTMLROWS_RRA)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_mailboxtype} -->", $HTMLROWS_MBXTYPE)
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_newtype} -->", $HTMLROWS_NEWTYPE)
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_ou} -->", $HTMLROWS_OU)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {result} -->", $ResultHtml)
     return $HTMLRESPONSE
 }
@@ -362,6 +392,43 @@ function Get-MailEnableCandidateGroup {
                 if ($GroupName -and $GroupDn) {
                     [pscustomobject]@{ Name = $GroupName; Dn = $GroupDn }
                 }
+            }
+        }
+        finally { $Results.Dispose() }
+    }
+    finally { $Searcher.Dispose() }
+}
+
+function Get-OrganizationalUnitCandidate {
+    # Organisational units, for the "create in" picker. Returns objects with Name
+    # (the canonical-ish path, for display) and Dn.
+    #
+    # Over ADSI for the same reason Get-MailEnableCandidateGroup is: the Recipient
+    # Management snap-in ships a reduced cmdlet set, so nothing here may assume a
+    # directory cmdlet exists just because Exchange normally has one.
+    #
+    # $ERAC_OuLookup is the same optional scriptblock override, used by the harness
+    # so the suite never issues an LDAP query.
+    if ($ERAC_OuLookup -is [scriptblock]) { return (& $ERAC_OuLookup) }
+
+    $Searcher = [adsisearcher]"(objectCategory=organizationalUnit)"
+    try {
+        $Searcher.PageSize = 200
+        $Searcher.SizeLimit = 500
+        [void]$Searcher.PropertiesToLoad.AddRange(@('name', 'distinguishedname'))
+
+        $Results = $Searcher.FindAll()
+        try {
+            foreach ($Result in $Results) {
+                $OuDn = [string]$Result.Properties['distinguishedname'][0]
+                if (-not $OuDn) { continue }
+                # Show the nesting rather than a bare leaf name: two OUs called
+                # "Users" under different parents are otherwise indistinguishable.
+                $Path = (($OuDn -split '(?<!\\),') |
+                    Where-Object { $_ -like 'OU=*' } |
+                    ForEach-Object { $_.Substring(3) })
+                [array]::Reverse($Path)
+                [pscustomobject]@{ Name = ($Path -join ' / '); Dn = $OuDn }
             }
         }
         finally { $Results.Dispose() }
@@ -733,6 +800,63 @@ try {
                     catch {
                         $HTML_RESULT = $HTML_WARN.Replace("{result}", (ConvertTo-SafeHtml $_.Exception.Message))
                     }
+                }
+
+                $HTMLRESPONSE = Get-RemoteMailboxListPage -ResultHtml $HTML_RESULT
+                break
+            }
+
+            "POST /newremotemailbox" {
+                # Creates the AD object AND the remote mailbox in one call. The enable
+                # path cannot do this: Enable-RemoteMailbox mail-enables a user that
+                # already exists, so there is nothing to pick for a brand-new shared
+                # mailbox. POST rather than GET so the fields stay out of the request
+                # log, which the enable form's query string does not.
+                $params = ConvertFrom-HttpQuery (Read-RequestBody $REQUEST)
+
+                try {
+                    $Name = "$($params['name'])".Trim()
+                    if (-not $Name) { throw "Name is required." }
+
+                    $NewType = Resolve-RemoteMailboxType $params['mailboxtype']
+                    if (-not $NewType -or $ERAC_CreatableMailboxTypes -notcontains $NewType) {
+                        throw "Only $($ERAC_CreatableMailboxTypes -join ', ') mailboxes can be created here. A regular mailbox needs a UserPrincipalName and a Password, which this tool deliberately never handles - create the AD user first, then use Enable Remote Mailbox."
+                    }
+
+                    $PrimaryLocal = "$($params['primarysmtpaddress_local'])".Trim()
+                    if (-not $PrimaryLocal) { throw "Primary SMTP address is required." }
+                    $NewPrimary = "$PrimaryLocal@$($params['primarysmtpaddress_accepteddomain'])"
+
+                    $RoutingLocal = "$($params['remoteroutingaddress_local'])".Trim()
+                    if (-not $RoutingLocal) { throw "Remote routing address is required." }
+                    $NewRouting = "$RoutingLocal@$($params['remoteroutingaddress_accepteddomain'])"
+
+                    foreach ($Addr in @($NewPrimary, $NewRouting)) {
+                        if ($Addr -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
+                            throw "'$Addr' is not a valid email address"
+                        }
+                    }
+
+                    $NewParams = @{
+                        Name                 = $Name
+                        PrimarySmtpAddress   = $NewPrimary
+                        RemoteRoutingAddress = $NewRouting
+                        ErrorAction          = 'Stop'
+                    }
+                    $NewParams[$NewType] = $true
+
+                    # Blank optional fields are omitted rather than sent empty: passing
+                    # -Alias "" is an error, and Exchange derives sensible defaults.
+                    foreach ($Opt in @(@('displayname', 'DisplayName'), @('alias', 'Alias'), @('ou', 'OnPremisesOrganizationalUnit'))) {
+                        $OptValue = "$($params[$Opt[0]])".Trim()
+                        if ($OptValue) { $NewParams[$Opt[1]] = $OptValue }
+                    }
+
+                    New-RemoteMailbox @NewParams | Out-Null
+                    $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Created $(ConvertTo-SafeHtml $NewPrimary) as a $($NewType.ToLower()) mailbox. Exchange Online will not show it until the next directory sync; grant people access after that with Grant-SharedMailboxAccess.ps1.")
+                }
+                catch {
+                    $HTML_RESULT = $HTML_WARN.Replace("{result}", (ConvertTo-SafeHtml $_.Exception.Message))
                 }
 
                 $HTMLRESPONSE = Get-RemoteMailboxListPage -ResultHtml $HTML_RESULT
