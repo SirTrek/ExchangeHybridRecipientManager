@@ -150,6 +150,50 @@ function Get-ErrorPage {
 "@
 }
 
+function Set-RemoteMailboxPrimaryAddress {
+    # Promoting an address is NOT an EmailAddresses @{Add=...} operation.
+    #
+    # That collection is keyed on the address case-insensitively, so adding
+    # "SMTP:kelley@example.com" when "smtp:kelley@example.com" is already present
+    # matches the existing entry and changes nothing - no error, no change. The
+    # prefix case carries the primary/alias distinction but is not part of the key,
+    # so Add cannot move it. That is how a "primary address added" banner came to
+    # sit above a mailbox whose primary had not moved.
+    #
+    # -PrimarySmtpAddress is the operation that moves it: it promotes the address,
+    # adding it first if it is not already there, and demotes the previous primary
+    # to an alias.
+    param(
+        [Parameter(Mandatory)][string]$Identity,
+        [Parameter(Mandatory)][string]$Address
+    )
+
+    $Before = Get-RemoteMailbox -Identity $Identity -ErrorAction Stop
+
+    # A mailbox whose addresses are stamped by an email address policy either
+    # refuses the change or has the policy put the old value back on the next
+    # application. Checked up front so the operator gets the reason and a way out,
+    # rather than a cryptic refusal or a silent revert some time later. Guarded
+    # with PSObject in case a build does not surface the property at all.
+    if ($Before.PSObject.Properties['EmailAddressPolicyEnabled'] -and $Before.EmailAddressPolicyEnabled) {
+        throw "This mailbox's addresses are managed by an email address policy, so its primary address can't be set directly. Turn off policy management in the Email Address Policy card below, then try again."
+    }
+
+    Set-RemoteMailbox -Identity $Identity -PrimarySmtpAddress $Address -ErrorAction Stop
+
+    # Read back instead of assuming. Every "it said it worked" report against this
+    # tool has come from treating the absence of an exception as proof of a change.
+    $After = Get-RemoteMailbox -Identity $Address -ErrorAction SilentlyContinue
+    if (-not $After) { $After = Get-RemoteMailbox -Identity $Identity -ErrorAction SilentlyContinue }
+    if (-not $After) {
+        throw "Exchange accepted the change, but the mailbox could not be read back to confirm it. Check the mailbox before assuming the primary address moved."
+    }
+    if ("$($After.PrimarySmtpAddress)" -ne $Address) {
+        throw "Exchange accepted the change without raising an error, but the primary address is still '$($After.PrimarySmtpAddress)'. Nothing was changed."
+    }
+    return $After
+}
+
 function Get-RemoteMailboxEditPage {
     # Renders editremotemailbox.html for a given mailbox identity. Shared by the
     # GET (initial view) and POST (after an update) handlers below.
@@ -196,18 +240,32 @@ function Get-RemoteMailboxEditPage {
             # apostrophe (legal in an SMTP local part) terminate the string, which nulled
             # the handler and removed the prompt entirely from a destructive action.
             $RemoveBtn = "
-            <form method=`"post`" action=`"/editremotemailbox`" data-confirm=`"Remove ${SafeAddr}?`" onsubmit=`"return confirm(this.dataset.confirm)`">
+            <form method=`"post`" action=`"/editremotemailbox`" class=`"d-inline`" data-confirm=`"Remove ${SafeAddr}?`" onsubmit=`"return confirm(this.dataset.confirm)`">
             <input type=`"hidden`" name=`"id`" value=`"$SafeId`">
             <input type=`"hidden`" name=`"Action`" value=`"removealias`">
             <input type=`"hidden`" name=`"alias`" value=`"$SafeAddr`">
             <button type=`"submit`" class=`"btn btn-sm btn-outline-danger`">Remove</button>
             </form>"
         }
+        # Only SMTP aliases can be promoted. x500 and sip entries are legitimate
+        # proxy addresses but are not reply addresses, and -PrimarySmtpAddress
+        # would reject them.
+        $PrimaryBtn = ""
+        if (-not $IsPrimary -and $AddrString -cmatch '^smtp:') {
+            $PrimaryBtn = "
+            <form method=`"post`" action=`"/editremotemailbox`" class=`"d-inline me-1`" data-confirm=`"Make ${SafeAddr} the primary address? The current primary becomes an alias.`" onsubmit=`"return confirm(this.dataset.confirm)`">
+            <input type=`"hidden`" name=`"id`" value=`"$SafeId`">
+            <input type=`"hidden`" name=`"Action`" value=`"makeprimary`">
+            <input type=`"hidden`" name=`"alias`" value=`"$SafeAddr`">
+            <button type=`"submit`" class=`"btn btn-sm btn-outline-primary`">Make primary</button>
+            </form>"
+        }
+
         $HTMLROWS_PROXY += "
         <tr>
         <td>$SafeAddr</td>
         <td>$Badge</td>
-        <td>$RemoveBtn</td>
+        <td>$PrimaryBtn$RemoveBtn</td>
         </tr>";
     }
 
@@ -218,6 +276,22 @@ function Get-RemoteMailboxEditPage {
     foreach ($TypeName in $ERAC_MailboxTypes) {
         $Sel = if ($TypeName -eq $CurrentType) { " selected" } else { "" }
         $HTMLROWS_TYPE += "`n<option$Sel value=`"$TypeName`">$TypeName</option>"
+    }
+
+    # Email address policy. Whether the primary address can be set by hand at all
+    # depends on this, so it is surfaced next to the addresses rather than buried.
+    $PolicyEnabled = [bool]$Mailbox.EmailAddressPolicyEnabled
+    if ($PolicyEnabled) {
+        $PolicyBadgeClass = "text-bg-secondary"
+        $PolicyStatusText = "Policy-managed"
+        $PolicyToggleValue = "false"
+        $PolicyToggleLabel = "Turn off policy management"
+    }
+    else {
+        $PolicyBadgeClass = "text-bg-warning"
+        $PolicyStatusText = "Managed manually"
+        $PolicyToggleValue = "true"
+        $PolicyToggleLabel = "Turn on policy management"
     }
 
     if ($Mailbox.HiddenFromAddressListsEnabled) {
@@ -241,6 +315,10 @@ function Get-RemoteMailboxEditPage {
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{id}", $SafeId)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{recipient_type_details}", (ConvertTo-SafeHtml $Mailbox.RecipientTypeDetails))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_type} -->", $HTMLROWS_TYPE)
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{policy_badge_class}", $PolicyBadgeClass)
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{policy_status_text}", $PolicyStatusText)
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{policy_toggle_value}", $PolicyToggleValue)
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{policy_toggle_label}", $PolicyToggleLabel)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{hidden_badge_class}", $HiddenBadgeClass)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{hidden_status_text}", $HiddenStatusText)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{hidden_toggle_value}", $HiddenToggleValue)
@@ -916,6 +994,17 @@ try {
                                 break
                             }
 
+                            # An upper-case SMTP: prefix means "make this the reply
+                            # address", which is a different operation entirely - see
+                            # Set-RemoteMailboxPrimaryAddress. Sending it to @{Add=...}
+                            # is what silently did nothing.
+                            if ($Prefix -ceq 'SMTP') {
+                                $Promoted = Set-RemoteMailboxPrimaryAddress -Identity $Identity -Address $Address
+                                $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "$(ConvertTo-SafeHtml $Address) is now the primary address. The previous primary was kept as an alias.")
+                                $Identity = "$($Promoted.PrimarySmtpAddress)"
+                                break
+                            }
+
                             if (-not $Prefix) { $Prefix = 'smtp' }
                             $NewAlias = "${Prefix}:$Address"
 
@@ -923,9 +1012,8 @@ try {
                             # falling through to the success message.
                             Set-RemoteMailbox -Identity $Identity -EmailAddresses @{Add = $NewAlias } -ErrorAction Stop
 
-                            $AddedAs = if ($Prefix -ceq 'SMTP') { "primary address" } else { "alias" }
                             $PickerNote = if ($UsedPicker) { "" } else { " (domain taken from the address you typed)" }
-                            $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Added $AddedAs $Address$PickerNote")
+                            $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Added alias $Address$PickerNote")
                             break
                         }
                         "removealias" {
@@ -945,6 +1033,27 @@ try {
                             }
                             Set-RemoteMailbox -Identity $Identity -Type $NewType -ErrorAction Stop
                             $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Mailbox type set to $NewType in Active Directory. Exchange Online will not reflect it until the next directory sync.")
+                            break
+                        }
+                        "makeprimary" {
+                            $NewPrimaryAddr = "$($params['alias'])".Trim()
+                            if ($NewPrimaryAddr -match '^smtp:(?<rest>.*)$') { $NewPrimaryAddr = $Matches['rest'].Trim() }
+                            if ($NewPrimaryAddr -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') {
+                                $HTML_RESULT = $HTML_WARN.Replace("{result}", "'$(ConvertTo-SafeHtml $NewPrimaryAddr)' is not a valid email address")
+                                break
+                            }
+                            $Promoted = Set-RemoteMailboxPrimaryAddress -Identity $Identity -Address $NewPrimaryAddr
+                            $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "$(ConvertTo-SafeHtml $NewPrimaryAddr) is now the primary address. The previous primary was kept as an alias.")
+                            # The primary address IS the identity this page is keyed on,
+                            # so it has to move with it or the re-render 404s.
+                            $Identity = "$($Promoted.PrimarySmtpAddress)"
+                            break
+                        }
+                        "togglepolicy" {
+                            $NewPolicy = $params['policy'] -eq 'true'
+                            Set-RemoteMailbox -Identity $Identity -EmailAddressPolicyEnabled $NewPolicy -ErrorAction Stop
+                            $PolicyNote = if ($NewPolicy) { "Exchange will stamp this mailbox's addresses from the policy again." } else { "This mailbox's addresses are now set by hand; the primary address can be changed." }
+                            $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Email address policy management is now $NewPolicy. $PolicyNote")
                             break
                         }
                         "togglehidden" {

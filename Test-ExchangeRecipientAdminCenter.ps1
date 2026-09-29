@@ -52,22 +52,61 @@ $prelude = {
 
     function Get-RemoteMailbox {
         [CmdletBinding()] param([string]$Identity,[string]$Filter,$ResultSize)
-        if ($Identity -and $Identity -notlike "*contoso.com*") { return $null }
+        # The mutable bits live in a file so a change made by one request is visible
+        # to the next. Promoting an address reads the mailbox back to confirm the
+        # primary actually moved; a stub that always returned the same value would
+        # make that check vacuous and could never catch a silent no-op.
+        $st = Join-Path $env:TEMP "erac_mbxstate_test.txt"
+        $primary = $SMTP
+        $policy = $false
+        if (Test-Path $st) {
+            $bits = ((Get-Content $st -Raw).Trim() -split '\|')
+            if ($bits[0]) { $primary = $bits[0] }
+            $policy = ($bits[1] -eq 'True')
+        }
+        if ($Identity -and $Identity -notlike "*contoso.com*" -and $Identity -ne $primary) { return $null }
         # A second fixture that is already a shared mailbox, so the type picker's
         # preselect is tested against something other than the default.
         $Rtd = if ($Identity -like "*shared*") { "RemoteSharedMailbox" } else { "RemoteUserMailbox" }
-        [pscustomobject]@{ Name=$DN;DisplayName=$DN;Alias="ob";PrimarySmtpAddress=$SMTP
+        [pscustomobject]@{ Name=$DN;DisplayName=$DN;Alias="ob";PrimarySmtpAddress=$primary
             RemoteRoutingAddress="ob@t.mail.onmicrosoft.com";RecipientTypeDetails=$Rtd
             WhenChanged="2026-08-26";HiddenFromAddressListsEnabled=$false
-            EmailAddresses=@("SMTP:$SMTP","smtp:o'brien.alt@contoso.com") } }
+            EmailAddressPolicyEnabled=$policy
+            EmailAddresses=@("SMTP:$primary","smtp:o'brien.alt@contoso.com",
+                "smtp:promote.me@contoso.com",
+                "x500:/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Recipients/cn=abc") } }
     function Set-RemoteMailbox {
         [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,$EmailAddresses,
             [bool]$HiddenFromAddressListsEnabled,[string]$DisplayName,[string]$Alias,
-            [string]$RemoteRoutingAddress,[string]$PrimarySmtpAddress,[string]$Type)
+            [string]$RemoteRoutingAddress,[string]$PrimarySmtpAddress,[string]$Type,
+            [bool]$EmailAddressPolicyEnabled)
         # Logged only when -Type is actually passed, so the every-other-call paths
         # are unaffected and "the cmdlet was never reached" stays assertable.
         if ($PSBoundParameters.ContainsKey('Type')) {
             Add-Content -Path (Join-Path $env:TEMP "erac_setmbxtype_test.txt") -Value "$Identity|$Type"
+        }
+        if ($PSBoundParameters.ContainsKey('EmailAddresses')) {
+            $op = if ($EmailAddresses.ContainsKey('Add')) { "Add=$($EmailAddresses['Add'])" } else { "Remove=$($EmailAddresses['Remove'])" }
+            Add-Content -Path (Join-Path $env:TEMP "erac_addr_test.txt") -Value "$Identity|$op"
+        }
+        $st = Join-Path $env:TEMP "erac_mbxstate_test.txt"
+        if ($PSBoundParameters.ContainsKey('PrimarySmtpAddress') -or $PSBoundParameters.ContainsKey('EmailAddressPolicyEnabled')) {
+            $primary = $SMTP; $policy = $false
+            if (Test-Path $st) {
+                $bits = ((Get-Content $st -Raw).Trim() -split '\|')
+                if ($bits[0]) { $primary = $bits[0] }
+                $policy = ($bits[1] -eq 'True')
+            }
+            if ($PSBoundParameters.ContainsKey('PrimarySmtpAddress')) {
+                # Exchange refuses this while an address policy owns the mailbox.
+                if ($policy) { throw "The primary SMTP address can't be modified because the email address policy is applied to this recipient." }
+                Add-Content -Path (Join-Path $env:TEMP "erac_setprimary_test.txt") -Value "$Identity|$PrimarySmtpAddress"
+                # The sentinel makes the cmdlet ACCEPT the call and change nothing,
+                # which is the silent no-op the read-back check exists to catch.
+                if (-not (Test-Path (Join-Path $env:TEMP "erac_primary_noop.txt"))) { $primary = $PrimarySmtpAddress }
+            }
+            if ($PSBoundParameters.ContainsKey('EmailAddressPolicyEnabled')) { $policy = $EmailAddressPolicyEnabled }
+            Set-Content -Path $st -Value "$primary|$policy"
         } }
     function Enable-RemoteMailbox {
         # -Archive is deliberately declared alongside the three type switches. It is a
@@ -228,6 +267,8 @@ $prelude = {
 
 Remove-Item (Join-Path $env:TEMP "erac_groups_fail.txt") -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $env:TEMP "erac_ous_fail.txt") -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $env:TEMP "erac_mbxstate_test.txt") -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $env:TEMP "erac_primary_noop.txt") -ErrorAction SilentlyContinue
 $job = Start-Job -ScriptBlock $prelude -ArgumentList $script,$Port
 foreach($i in 1..40){Start-Sleep -m 400; try{Invoke-WebRequest "$base/" -UseBasicParsing -TimeoutSec 3|Out-Null;break}catch{}}
 
@@ -754,6 +795,79 @@ try {
 } finally { Remove-Item $ouFail -Force -EA SilentlyContinue }
 
 if (Test-Path $nmLog) { Remove-Item $nmLog -Force }
+
+"`n=== 22. Changing the primary SMTP address (the reported failure) ==="
+# Reported: adding SMTP:kelley@everrest.us when smtp:kelley@everrest.us already
+# existed reported success and changed nothing. EmailAddresses is keyed on the
+# address case-insensitively, so @{Add=...} matched the existing entry and did
+# nothing; the prefix case carries primary/alias but is not part of the key.
+$stateF = Join-Path $env:TEMP "erac_mbxstate_test.txt"
+$primF  = Join-Path $env:TEMP "erac_setprimary_test.txt"
+$addrF  = Join-Path $env:TEMP "erac_addr_test.txt"
+$noopF  = Join-Path $env:TEMP "erac_primary_noop.txt"
+function Reset-Mbx { foreach ($f in @($stateF,$primF,$addrF,$noopF)) { if (Test-Path $f) { Remove-Item $f -Force } } }
+Reset-Mbx
+
+$x = Req GET "/editremotemailbox?id=o%27brien%40contoso.com"
+Check "smtp aliases offer Make primary" ($x.Body -match 'value="makeprimary"') "no Make primary control"
+Check "  the current primary does not" ($x.Body -notmatch '(?s)SMTP:o&#39;brien@contoso\.com.{0,400}?value="makeprimary"') "primary row offers to promote itself"
+Check "  and x500 addresses do not" ($x.Body -notmatch '(?s)x500:.{0,400}?value="makeprimary"') "x500 offered as a reply address"
+
+# the fix: promote uses -PrimarySmtpAddress, never @{Add=...}
+$x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=makeprimary&alias=smtp%3Apromote.me%40contoso.com"
+Start-Sleep -Milliseconds 250
+Check "Make primary calls Set-RemoteMailbox -PrimarySmtpAddress" (@(Get-Content $primF -EA SilentlyContinue) -contains "o'brien@contoso.com|promote.me@contoso.com") "got: $(Get-Content $primF -EA SilentlyContinue)"
+Check "  and does NOT use EmailAddresses @{Add}" (-not (Test-Path $addrF)) "it went through @{Add}: $(Get-Content $addrF -EA SilentlyContinue)"
+Check "  banner confirms the move" ($x.Body -match 'is now the primary address') "no confirmation"
+Check "  the page re-renders on the NEW primary" ($x.Body -match 'SMTP:promote\.me@contoso\.com') "page did not follow the identity"
+
+# the exact reported case: upper-case SMTP: on an address that already exists
+Reset-Mbx
+$x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=addalias&alias_local=SMTP%3Apromote.me%40contoso.com"
+Start-Sleep -Milliseconds 250
+Check "an SMTP: prefix promotes instead of adding" (@(Get-Content $primF -EA SilentlyContinue) -contains "o'brien@contoso.com|promote.me@contoso.com") "got: $(Get-Content $primF -EA SilentlyContinue)"
+Check "  and never reaches @{Add}, which silently did nothing" (-not (Test-Path $addrF)) "still using @{Add}: $(Get-Content $addrF -EA SilentlyContinue)"
+Check "  banner says primary, not 'added'" (($x.Body -match 'is now the primary address') -and ($x.Body -notmatch 'Added primary address')) "banner still claims an add"
+
+# a lower-case alias add is unchanged
+Reset-Mbx
+Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=addalias&alias_local=newalias&alias_accepteddomain=contoso.com" | Out-Null
+Start-Sleep -Milliseconds 250
+Check "a plain alias still goes through @{Add}" (@(Get-Content $addrF -EA SilentlyContinue) -contains "o'brien@contoso.com|Add=smtp:newalias@contoso.com") "got: $(Get-Content $addrF -EA SilentlyContinue)"
+Check "  and does not touch the primary" (-not (Test-Path $primF)) "the primary was changed by an alias add"
+
+# success is verified, not assumed
+Reset-Mbx
+Set-Content -Path $noopF -Value "1"
+try {
+  $x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=makeprimary&alias=smtp%3Apromote.me%40contoso.com"
+  Start-Sleep -Milliseconds 250
+  Check "a silent no-op is reported, not celebrated" ($x.Body -match 'without raising an error') "banner: $((([regex]::Match($x.Body,'<div class=\"alert[^\"]*\"[^>]*>(.*?)</div>')).Groups[1].Value) -replace '\s+',' ')"
+  Check "  and success is NOT claimed" ($x.Body -notmatch 'is now the primary address') "claimed success anyway"
+} finally { Remove-Item $noopF -Force -EA SilentlyContinue }
+
+# policy-managed mailboxes are refused with the reason
+Reset-Mbx
+Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=togglepolicy&policy=true" | Out-Null
+Start-Sleep -Milliseconds 250
+$x = Req GET "/editremotemailbox?id=o%27brien%40contoso.com"
+Check "the policy card shows policy-managed" ($x.Body -match 'Policy-managed') "state not shown"
+Remove-Item $primF -Force -EA SilentlyContinue
+$x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=makeprimary&alias=smtp%3Apromote.me%40contoso.com"
+Start-Sleep -Milliseconds 250
+Check "a policy-managed mailbox is refused up front" ($x.Body -match 'managed by an email address policy') "no explanation given"
+Check "  and the cmdlet is never called" (-not (Test-Path $primF)) "Set-RemoteMailbox -PrimarySmtpAddress ran anyway"
+Check "  the refusal points at the way out" ($x.Body -match 'Email Address Policy card') "no remedy offered"
+
+# turning it off then promoting works
+Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=togglepolicy&policy=false" | Out-Null
+Start-Sleep -Milliseconds 250
+$x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=makeprimary&alias=smtp%3Apromote.me%40contoso.com"
+Start-Sleep -Milliseconds 250
+Check "with the policy off the promote succeeds" ($x.Body -match 'is now the primary address') "still refused"
+Check "  and the card flips to manual" ($x.Body -match 'Managed manually') "card did not update"
+
+Reset-Mbx
 
 "`n================ $pass passed, $fail failed ================"
 try{Invoke-WebRequest "$base/exit" -UseBasicParsing -TimeoutSec 5|Out-Null}catch{}

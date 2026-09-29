@@ -29,7 +29,7 @@ server. This puts a web UI on top of those cmdlets.
 
 | Section | Actions |
 |---|---|
-| **Remote Mailboxes** | Create a new shared, room or equipment mailbox (AD object and mailbox together); enable a mailbox for an existing AD user as regular, shared, room or equipment; convert an existing mailbox between those types; edit display name, alias and remote routing address; add and remove proxy addresses; hide from or show in the GAL; disable the remote mailbox |
+| **Remote Mailboxes** | Create a new shared, room or equipment mailbox (AD object and mailbox together); enable a mailbox for an existing AD user as regular, shared, room or equipment; convert an existing mailbox between those types; edit display name, alias and remote routing address; add and remove proxy addresses; promote any SMTP alias to primary; turn email address policy management on or off; hide from or show in the GAL; disable the remote mailbox |
 | **Distribution Groups** | Create a group; mail-enable an existing AD group; edit display name and alias; mail-disable (keeps the AD group); delete |
 | **Contacts** | Create, edit external address and display name, delete |
 | **Email Address Policies** | Create with an address template, change priority and recipient filter, delete |
@@ -64,6 +64,35 @@ admin centre changes the *cloud* mailbox only: the type lives in `msExchRemoteRe
 on the on-premises AD object, which the cloud-side change never touches. Until both sides are
 set, `Get-RemoteMailbox` keeps reporting the old type and anything driven off those
 attributes disagrees with what Exchange Online is actually serving.
+
+## Changing the primary SMTP address
+
+Use the **Make primary** button on the address you want, or type it into the alias box
+with an upper-case `SMTP:` prefix. Either way it calls `Set-RemoteMailbox
+-PrimarySmtpAddress`, which promotes the address (adding it first if it isn't there) and
+demotes the old primary to an alias.
+
+It is deliberately **not** an `EmailAddresses @{Add=...}` operation. That collection is keyed
+on the address case-insensitively, so adding `SMTP:someone@example.com` when
+`smtp:someone@example.com` is already present matches the existing entry and changes nothing
+— no error, no change. The prefix case carries the primary/alias distinction but is not part
+of the key, so `Add` cannot move it.
+
+Two things follow from that, and both are handled:
+
+- **Address-policy-managed mailboxes refuse the change.** While an email address policy owns
+  a mailbox, Exchange stamps its addresses and either rejects a manual primary or puts the
+  old one back on the next application. The **Email Address Policy** card on each mailbox
+  shows the state and toggles it; attempting to promote while it is on is refused up front
+  with the reason rather than a cryptic Exchange error. Turning it off makes the addresses
+  manual — they stop tracking the policy, so new namespaces are no longer added
+  automatically.
+- **The result is read back, not assumed.** After the change the mailbox is re-read and the
+  primary compared. If Exchange accepted the call without moving it, you get a warning saying
+  so instead of a success banner over an unchanged mailbox.
+
+`x500` and other non-SMTP proxy addresses are not offered for promotion; they are valid
+proxy addresses but not reply addresses.
 
 ## Granting access to a shared mailbox
 
@@ -133,7 +162,7 @@ where you actually want to work.
 .\Test-ExchangeRecipientAdminCenter.ps1
 ```
 
-177 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
+197 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
 every route over real HTTP, so the whole request path is exercised rather than mocked. It
 needs no Exchange, no Active Directory and no admin rights, and it never issues an LDAP query
 — it is safe to run on the management box itself.

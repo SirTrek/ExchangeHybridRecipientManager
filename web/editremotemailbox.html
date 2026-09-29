@@ -174,6 +174,28 @@
           </div>
 
           <div class="card mb-4">
+            <div class="card-header">Email Address Policy</div>
+            <div class="card-body">
+              <div class="d-flex align-items-center">
+                <span class="badge {policy_badge_class} me-2">{policy_status_text}</span>
+                <form method="post" action="/editremotemailbox" class="d-inline">
+                  <input type="hidden" name="id" value="{id}">
+                  <input type="hidden" name="Action" value="togglepolicy">
+                  <input type="hidden" name="policy" value="{policy_toggle_value}">
+                  <button type="submit"
+                    class="btn btn-outline-secondary btn-sm">{policy_toggle_label}</button>
+                </form>
+              </div>
+              <div class="form-text mt-2">While a mailbox is policy-managed, Exchange
+                stamps its addresses from the matching email address policy and the
+                primary address can't be set by hand &mdash; a change is refused, or
+                put back the next time the policy is applied. Turning this off makes
+                the addresses manual: they stop tracking the policy, so new namespaces
+                won't be added automatically.</div>
+            </div>
+          </div>
+
+          <div class="card mb-4">
             <div
               class="card-header d-flex justify-content-between align-items-center">
               <span>Email Addresses (Proxy Addresses)</span>
