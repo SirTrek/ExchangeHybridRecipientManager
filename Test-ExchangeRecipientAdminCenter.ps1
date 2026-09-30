@@ -51,7 +51,7 @@ $prelude = {
         [pscustomobject]@{ UserPrincipalName = "u@x.internal" } }
 
     function Get-RemoteMailbox {
-        [CmdletBinding()] param([string]$Identity,[string]$Filter,$ResultSize)
+        [CmdletBinding()] param([string]$Identity,[string]$Filter,$ResultSize,[string]$DomainController)
         # The mutable bits live in a file so a change made by one request is visible
         # to the next. Promoting an address reads the mailbox back to confirm the
         # primary actually moved; a stub that always returned the same value would
@@ -59,7 +59,12 @@ $prelude = {
         $st = Join-Path $env:TEMP "erac_mbxstate_test.txt"
         $primary = $SMTP
         $policy = $false
-        if (Test-Path $st) {
+        # A replica that has not caught up yet: while the sentinel is set, only a
+        # read pinned to a DC sees what was written. This is the exact condition
+        # that made the read-back check report a successful change as a failure.
+        $sawTheWrite = $true
+        if ((Test-Path (Join-Path $env:TEMP "erac_stale_replica.txt")) -and -not $DomainController) { $sawTheWrite = $false }
+        if ($sawTheWrite -and (Test-Path $st)) {
             $bits = ((Get-Content $st -Raw).Trim() -split '\|')
             if ($bits[0]) { $primary = $bits[0] }
             $policy = ($bits[1] -eq 'True')
@@ -79,7 +84,7 @@ $prelude = {
         [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,$EmailAddresses,
             [bool]$HiddenFromAddressListsEnabled,[string]$DisplayName,[string]$Alias,
             [string]$RemoteRoutingAddress,[string]$PrimarySmtpAddress,[string]$Type,
-            [bool]$EmailAddressPolicyEnabled)
+            [bool]$EmailAddressPolicyEnabled,[string]$DomainController)
         # Logged only when -Type is actually passed, so the every-other-call paths
         # are unaffected and "the cmdlet was never reached" stays assertable.
         if ($PSBoundParameters.ContainsKey('Type')) {
@@ -100,7 +105,7 @@ $prelude = {
             if ($PSBoundParameters.ContainsKey('PrimarySmtpAddress')) {
                 # Exchange refuses this while an address policy owns the mailbox.
                 if ($policy) { throw "The primary SMTP address can't be modified because the email address policy is applied to this recipient." }
-                Add-Content -Path (Join-Path $env:TEMP "erac_setprimary_test.txt") -Value "$Identity|$PrimarySmtpAddress"
+                Add-Content -Path (Join-Path $env:TEMP "erac_setprimary_test.txt") -Value "$Identity|$PrimarySmtpAddress|dc=$DomainController"
                 # The sentinel makes the cmdlet ACCEPT the call and change nothing,
                 # which is the silent no-op the read-back check exists to catch.
                 if (-not (Test-Path (Join-Path $env:TEMP "erac_primary_noop.txt"))) { $primary = $PrimarySmtpAddress }
@@ -121,7 +126,7 @@ $prelude = {
         $sw = if ($fired) { $fired -join '+' } else { 'none' }
         Set-Content -Path (Join-Path $env:TEMP "erac_enable_test.txt") -Value "$PrimarySMTPAddress|$sw" }
     function Disable-RemoteMailbox {
-        [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+        [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,[string]$DomainController) }
 
     function Get-AcceptedDomain {
         [CmdletBinding()] param([string]$Identity)
@@ -185,6 +190,9 @@ $prelude = {
         Add-Content -Path (Join-Path $env:TEMP "erac_newmbx_test.txt") -Value "$Name|$kind|$PrimarySmtpAddress|$RemoteRoutingAddress|dn=$dn|alias=$al|ou=$ou" }
 
     # Same override seam as the groups one, driven by the same kind of sentinel.
+    # Resolving a real DC would need a real domain; the app's override seam avoids it.
+    $ERAC_DcLookup = { "dc01.contoso.com" }
+
     $ERAC_OuLookup = {
         if (Test-Path (Join-Path $env:TEMP "erac_ous_fail.txt")) {
             throw "A referral was returned from the server."
@@ -269,6 +277,7 @@ Remove-Item (Join-Path $env:TEMP "erac_groups_fail.txt") -ErrorAction SilentlyCo
 Remove-Item (Join-Path $env:TEMP "erac_ous_fail.txt") -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $env:TEMP "erac_mbxstate_test.txt") -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $env:TEMP "erac_primary_noop.txt") -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $env:TEMP "erac_stale_replica.txt") -ErrorAction SilentlyContinue
 $job = Start-Job -ScriptBlock $prelude -ArgumentList $script,$Port
 foreach($i in 1..40){Start-Sleep -m 400; try{Invoke-WebRequest "$base/" -UseBasicParsing -TimeoutSec 3|Out-Null;break}catch{}}
 
@@ -816,7 +825,7 @@ Check "  and x500 addresses do not" ($x.Body -notmatch '(?s)x500:.{0,400}?value=
 # the fix: promote uses -PrimarySmtpAddress, never @{Add=...}
 $x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=makeprimary&alias=smtp%3Apromote.me%40contoso.com"
 Start-Sleep -Milliseconds 250
-Check "Make primary calls Set-RemoteMailbox -PrimarySmtpAddress" (@(Get-Content $primF -EA SilentlyContinue) -contains "o'brien@contoso.com|promote.me@contoso.com") "got: $(Get-Content $primF -EA SilentlyContinue)"
+Check "Make primary calls Set-RemoteMailbox -PrimarySmtpAddress" (@(Get-Content $primF -EA SilentlyContinue) -contains "o'brien@contoso.com|promote.me@contoso.com|dc=dc01.contoso.com") "got: $(Get-Content $primF -EA SilentlyContinue)"
 Check "  and does NOT use EmailAddresses @{Add}" (-not (Test-Path $addrF)) "it went through @{Add}: $(Get-Content $addrF -EA SilentlyContinue)"
 Check "  banner confirms the move" ($x.Body -match 'is now the primary address') "no confirmation"
 Check "  the page re-renders on the NEW primary" ($x.Body -match 'SMTP:promote\.me@contoso\.com') "page did not follow the identity"
@@ -825,7 +834,7 @@ Check "  the page re-renders on the NEW primary" ($x.Body -match 'SMTP:promote\.
 Reset-Mbx
 $x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=addalias&alias_local=SMTP%3Apromote.me%40contoso.com"
 Start-Sleep -Milliseconds 250
-Check "an SMTP: prefix promotes instead of adding" (@(Get-Content $primF -EA SilentlyContinue) -contains "o'brien@contoso.com|promote.me@contoso.com") "got: $(Get-Content $primF -EA SilentlyContinue)"
+Check "an SMTP: prefix promotes instead of adding" (@(Get-Content $primF -EA SilentlyContinue) -contains "o'brien@contoso.com|promote.me@contoso.com|dc=dc01.contoso.com") "got: $(Get-Content $primF -EA SilentlyContinue)"
 Check "  and never reaches @{Add}, which silently did nothing" (-not (Test-Path $addrF)) "still using @{Add}: $(Get-Content $addrF -EA SilentlyContinue)"
 Check "  banner says primary, not 'added'" (($x.Body -match 'is now the primary address') -and ($x.Body -notmatch 'Added primary address')) "banner still claims an add"
 
@@ -866,6 +875,48 @@ $x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=makeprimar
 Start-Sleep -Milliseconds 250
 Check "with the policy off the promote succeeds" ($x.Body -match 'is now the primary address') "still refused"
 Check "  and the card flips to manual" ($x.Body -match 'Managed manually') "card did not update"
+
+Reset-Mbx
+
+"`n=== 23. Reads and writes are pinned to one DC (the reported false alarm) ==="
+# Reported: "Exchange accepted the change ... nothing was changed", over a mailbox
+# that had in fact already moved. Set-RemoteMailbox wrote to one domain controller
+# and the read-back landed on another that had not replicated yet.
+$staleF = Join-Path $env:TEMP "erac_stale_replica.txt"
+Reset-Mbx
+Remove-Item $staleF -Force -EA SilentlyContinue
+
+$x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=makeprimary&alias=smtp%3Apromote.me%40contoso.com"
+Start-Sleep -Milliseconds 250
+Check "the write is pinned to a DC" (@(Get-Content $primF -EA SilentlyContinue) -match 'dc=dc01\.contoso\.com') "got: $(Get-Content $primF -EA SilentlyContinue)"
+
+# the real test: a replica that has not caught up must not produce a false failure
+Reset-Mbx
+Set-Content -Path $staleF -Value "1"
+try {
+  $x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=makeprimary&alias=smtp%3Apromote.me%40contoso.com"
+  Start-Sleep -Milliseconds 250
+  Check "a lagging replica no longer fakes a failure" ($x.Body -match 'is now the primary address') "banner: $((([regex]::Match($x.Body,'<div class=\"alert[^\"]*\"[^>]*>(.*?)</div>')).Groups[1].Value) -replace '\s+',' ')"
+  Check "  and the false 'nothing was changed' is gone" ($x.Body -notmatch 'Nothing was changed') "still reporting a failure"
+  Check "  the page shows the new primary, not the stale one" ($x.Body -match 'SMTP:promote\.me@contoso\.com') "page rendered from the lagging replica"
+
+  # a change made through any other action must also survive the lag
+  Reset-Mbx
+  Set-Content -Path $staleF -Value "1"
+  $x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=togglepolicy&policy=true"
+  Start-Sleep -Milliseconds 250
+  Check "the re-rendered page reflects a policy change through the lag" ($x.Body -match 'Policy-managed') "card rendered from the lagging replica"
+} finally { Remove-Item $staleF -Force -EA SilentlyContinue }
+
+# a genuine no-op is still caught, and still names the DC it checked
+Reset-Mbx
+Set-Content -Path $noopF -Value "1"
+try {
+  $x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=makeprimary&alias=smtp%3Apromote.me%40contoso.com"
+  Start-Sleep -Milliseconds 250
+  Check "a real no-op is still reported" ($x.Body -match 'still reports the primary address') "banner: $((([regex]::Match($x.Body,'<div class=\"alert[^\"]*\"[^>]*>(.*?)</div>')).Groups[1].Value) -replace '\s+',' ')"
+  Check "  and names the DC it checked" ($x.Body -match 'dc01\.contoso\.com') "no DC named, so the operator cannot tell where it looked"
+} finally { Remove-Item $noopF -Force -EA SilentlyContinue }
 
 Reset-Mbx
 

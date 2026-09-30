@@ -150,6 +150,51 @@ function Get-ErrorPage {
 "@
 }
 
+$ERAC_DomainController = $null
+$ERAC_DomainControllerResolved = $false
+
+function Get-PreferredDomainController {
+    # Set-RemoteMailbox writes to one domain controller, and a Get-RemoteMailbox
+    # issued moments later can land on a different one that has not replicated yet.
+    # That made the read-back check report a change which had in fact succeeded as a
+    # failure - "Exchange accepted the change ... nothing was changed" over a mailbox
+    # that had already moved. Pinning every read and write in a request to one DC
+    # removes the race.
+    #
+    # Resolved through .NET rather than an Exchange cmdlet, for the same reason the
+    # group and OU lookups are: the Recipient Management snap-in ships a reduced
+    # cmdlet set. Cached, because this is a real directory query.
+    #
+    # $ERAC_DcLookup is the usual optional scriptblock override for the harness.
+    if ($ERAC_DcLookup -is [scriptblock]) { return (& $ERAC_DcLookup) }
+
+    if (-not $script:ERAC_DomainControllerResolved) {
+        $script:ERAC_DomainControllerResolved = $true
+        try {
+            $script:ERAC_DomainController = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().FindDomainController().Name
+            Write-Host "$(Get-Date -Format s) Pinning directory reads and writes to $($script:ERAC_DomainController)"
+        }
+        catch {
+            Write-Host "$(Get-Date -Format s) Could not resolve a domain controller to pin to: $($_.Exception.Message)"
+            $script:ERAC_DomainController = $null
+        }
+    }
+    return $script:ERAC_DomainController
+}
+
+function Get-DcParam {
+    # Splat for the recipient cmdlets. Empty when no DC could be resolved, or when
+    # the cmdlet has no -DomainController on this build, so neither case turns into
+    # a parameter-binding failure.
+    param([string]$CmdletName = 'Get-RemoteMailbox')
+    $Result = @{}
+    $Dc = Get-PreferredDomainController
+    if (-not $Dc) { return $Result }
+    $Cmd = Get-Command $CmdletName -ErrorAction SilentlyContinue
+    if ($Cmd -and $Cmd.Parameters.ContainsKey('DomainController')) { $Result['DomainController'] = $Dc }
+    return $Result
+}
+
 function Set-RemoteMailboxPrimaryAddress {
     # Promoting an address is NOT an EmailAddresses @{Add=...} operation.
     #
@@ -168,7 +213,12 @@ function Set-RemoteMailboxPrimaryAddress {
         [Parameter(Mandatory)][string]$Address
     )
 
-    $Before = Get-RemoteMailbox -Identity $Identity -ErrorAction Stop
+    # One DC for the read, the write and the read-back. Without this the read-back
+    # can hit a replica that has not caught up and report a false failure.
+    $GetDc = Get-DcParam 'Get-RemoteMailbox'
+    $SetDc = Get-DcParam 'Set-RemoteMailbox'
+
+    $Before = Get-RemoteMailbox -Identity $Identity @GetDc -ErrorAction Stop
 
     # A mailbox whose addresses are stamped by an email address policy either
     # refuses the change or has the policy put the old value back on the next
@@ -179,17 +229,22 @@ function Set-RemoteMailboxPrimaryAddress {
         throw "This mailbox's addresses are managed by an email address policy, so its primary address can't be set directly. Turn off policy management in the Email Address Policy card below, then try again."
     }
 
-    Set-RemoteMailbox -Identity $Identity -PrimarySmtpAddress $Address -ErrorAction Stop
+    Set-RemoteMailbox -Identity $Identity -PrimarySmtpAddress $Address @SetDc -ErrorAction Stop
 
     # Read back instead of assuming. Every "it said it worked" report against this
     # tool has come from treating the absence of an exception as proof of a change.
-    $After = Get-RemoteMailbox -Identity $Address -ErrorAction SilentlyContinue
-    if (-not $After) { $After = Get-RemoteMailbox -Identity $Identity -ErrorAction SilentlyContinue }
+    $After = Get-RemoteMailbox -Identity $Address @GetDc -ErrorAction SilentlyContinue
+    if (-not $After) { $After = Get-RemoteMailbox -Identity $Identity @GetDc -ErrorAction SilentlyContinue }
     if (-not $After) {
         throw "Exchange accepted the change, but the mailbox could not be read back to confirm it. Check the mailbox before assuming the primary address moved."
     }
     if ("$($After.PrimarySmtpAddress)" -ne $Address) {
-        throw "Exchange accepted the change without raising an error, but the primary address is still '$($After.PrimarySmtpAddress)'. Nothing was changed."
+        # Without a pinned DC a stale replica can still produce this, so the wording
+        # depends on whether the reads and the write were actually pinned together.
+        if ($GetDc.Count -and $SetDc.Count) {
+            throw "Exchange accepted the change without raising an error, but $($GetDc['DomainController']) still reports the primary address as '$($After.PrimarySmtpAddress)'. Nothing was changed."
+        }
+        throw "Exchange accepted the change, but the primary address still reads as '$($After.PrimarySmtpAddress)'. No single domain controller could be pinned for this check, so this may be replication lag rather than a failure - reload this page in a minute before assuming it did not work."
     }
     return $After
 }
@@ -206,7 +261,12 @@ function Get-RemoteMailboxEditPage {
         return Get-ErrorPage -Title "No mailbox specified" -Detail "This page needs a mailbox to open. Pick one from the Remote Mailboxes list."
     }
 
-    $Mailbox = Get-RemoteMailbox -Identity $Identity -ErrorAction SilentlyContinue
+    # Same DC the writes went to, so the page that renders straight after a change
+    # shows the change rather than a not-yet-replicated copy of the old values.
+    # Splatting needs a variable - @(...) here would be the array operator and the
+    # hashtable would bind positionally instead.
+    $MbxDc = Get-DcParam 'Get-RemoteMailbox'
+    $Mailbox = Get-RemoteMailbox -Identity $Identity @MbxDc -ErrorAction SilentlyContinue
 
     if (-not $Mailbox) {
         return Get-ErrorPage -Title "Remote mailbox not found" -Detail "No remote mailbox matched '$Identity'."
@@ -958,6 +1018,12 @@ try {
                 $Identity = if ($params.ContainsKey('id')) { $params['id'] } else { $params['PrimarySmtpAddress'] }
                 $Disabled = $false
 
+                # Every write below goes to the same DC the edit page will read from,
+                # so the re-rendered page reflects what just happened.
+                $SetDc = Get-DcParam 'Set-RemoteMailbox'
+                $GetDc = Get-DcParam 'Get-RemoteMailbox'
+                $DisableDc = Get-DcParam 'Disable-RemoteMailbox'
+
                 try {
                     switch ($params['Action']) {
                         "addalias" {
@@ -1010,14 +1076,14 @@ try {
 
                             # -ErrorAction Stop so a failure reaches the catch below instead of
                             # falling through to the success message.
-                            Set-RemoteMailbox -Identity $Identity -EmailAddresses @{Add = $NewAlias } -ErrorAction Stop
+                            Set-RemoteMailbox -Identity $Identity -EmailAddresses @{Add = $NewAlias } @SetDc -ErrorAction Stop
 
                             $PickerNote = if ($UsedPicker) { "" } else { " (domain taken from the address you typed)" }
                             $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Added alias $Address$PickerNote")
                             break
                         }
                         "removealias" {
-                            Set-RemoteMailbox -Identity $Identity -EmailAddresses @{Remove = $params['alias'] } -ErrorAction Stop
+                            Set-RemoteMailbox -Identity $Identity -EmailAddresses @{Remove = $params['alias'] } @SetDc -ErrorAction Stop
                             $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Removed alias $($params['alias'])")
                             break
                         }
@@ -1031,7 +1097,7 @@ try {
                                 $HTML_RESULT = $HTML_WARN.Replace("{result}", "'$(ConvertTo-SafeHtml $params['MailboxType'])' is not a valid mailbox type. Choose one of: $($ERAC_MailboxTypes -join ', ').")
                                 break
                             }
-                            Set-RemoteMailbox -Identity $Identity -Type $NewType -ErrorAction Stop
+                            Set-RemoteMailbox -Identity $Identity -Type $NewType @SetDc -ErrorAction Stop
                             $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Mailbox type set to $NewType in Active Directory. Exchange Online will not reflect it until the next directory sync.")
                             break
                         }
@@ -1051,14 +1117,14 @@ try {
                         }
                         "togglepolicy" {
                             $NewPolicy = $params['policy'] -eq 'true'
-                            Set-RemoteMailbox -Identity $Identity -EmailAddressPolicyEnabled $NewPolicy -ErrorAction Stop
+                            Set-RemoteMailbox -Identity $Identity -EmailAddressPolicyEnabled $NewPolicy @SetDc -ErrorAction Stop
                             $PolicyNote = if ($NewPolicy) { "Exchange will stamp this mailbox's addresses from the policy again." } else { "This mailbox's addresses are now set by hand; the primary address can be changed." }
                             $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Email address policy management is now $NewPolicy. $PolicyNote")
                             break
                         }
                         "togglehidden" {
                             $NewHidden = $params['hidden'] -eq 'true'
-                            Set-RemoteMailbox -Identity $Identity -HiddenFromAddressListsEnabled $NewHidden -ErrorAction Stop
+                            Set-RemoteMailbox -Identity $Identity -HiddenFromAddressListsEnabled $NewHidden @SetDc -ErrorAction Stop
                             $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Set 'Hidden from address lists' to $NewHidden")
                             break
                         }
@@ -1066,7 +1132,7 @@ try {
                             # Require the confirmation text to match the mailbox's actual
                             # PrimarySmtpAddress - checked server-side too, not just via the
                             # UI's type-to-confirm JS, since that's trivially bypassed.
-                            $MailboxToDisable = Get-RemoteMailbox -Identity $Identity -ErrorAction SilentlyContinue
+                            $MailboxToDisable = Get-RemoteMailbox -Identity $Identity @GetDc -ErrorAction SilentlyContinue
                             if (-not $MailboxToDisable) {
                                 $HTML_RESULT = $HTML_WARN.Replace("{result}", "Remote mailbox '$($Identity)' not found")
                             }
@@ -1074,14 +1140,14 @@ try {
                                 $HTML_RESULT = $HTML_WARN.Replace("{result}", "Confirmation text didn't match $($MailboxToDisable.PrimarySmtpAddress) - no changes were made")
                             }
                             else {
-                                Disable-RemoteMailbox -Identity $Identity -Confirm:$false -ErrorAction Stop
+                                Disable-RemoteMailbox -Identity $Identity -Confirm:$false @DisableDc -ErrorAction Stop
                                 $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Remote Mailbox for $($MailboxToDisable.PrimarySmtpAddress) has been disabled")
                                 $Disabled = $true
                             }
                             break
                         }
                         default {
-                            Set-RemoteMailbox -Identity $Identity -DisplayName $params['DisplayName'] -Alias $params['Alias'] -RemoteRoutingAddress $params['RemoteRoutingAddress'] -ErrorAction Stop
+                            Set-RemoteMailbox -Identity $Identity -DisplayName $params['DisplayName'] -Alias $params['Alias'] -RemoteRoutingAddress $params['RemoteRoutingAddress'] @SetDc -ErrorAction Stop
                             $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Remote Mailbox updated successfully")
                             # DisplayName/Alias changes don't affect PrimarySmtpAddress, so it still identifies the mailbox below
                             $Identity = $params['PrimarySmtpAddress']

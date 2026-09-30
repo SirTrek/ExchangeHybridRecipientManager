@@ -90,6 +90,12 @@ Two things follow from that, and both are handled:
 - **The result is read back, not assumed.** After the change the mailbox is re-read and the
   primary compared. If Exchange accepted the call without moving it, you get a warning saying
   so instead of a success banner over an unchanged mailbox.
+- **Reads and writes are pinned to one domain controller.** `Set-RemoteMailbox` writes to one
+  DC, and a read issued moments later can land on another that hasn't replicated — which made
+  the read-back above report a *successful* change as a failure. Every remote-mailbox read and
+  write in a request now goes to the same DC, discovered once through .NET and named in the
+  console at startup. Where no DC can be resolved, a failed check says so and softens its
+  wording rather than asserting a change didn't happen when it cannot tell.
 
 `x500` and other non-SMTP proxy addresses are not offered for promotion; they are valid
 proxy addresses but not reply addresses.
@@ -162,7 +168,7 @@ where you actually want to work.
 .\Test-ExchangeRecipientAdminCenter.ps1
 ```
 
-197 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
+204 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
 every route over real HTTP, so the whole request path is exercised rather than mocked. It
 needs no Exchange, no Active Directory and no admin rights, and it never issues an LDAP query
 — it is safe to run on the management box itself.
