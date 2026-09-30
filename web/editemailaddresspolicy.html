@@ -118,6 +118,28 @@
                   <textarea class="form-control" id="RecipientFilter"
                     name="RecipientFilter" rows="4">{RecipientFilter}</textarea>
                 </div>
+                <div class="mb-3">
+                  <label for="EnabledEmailAddressTemplates"
+                    class="form-label">Email Address Templates</label>
+                  <textarea class="form-control font-monospace"
+                    id="EnabledEmailAddressTemplates"
+                    name="EnabledEmailAddressTemplates"
+                    rows="4">{EnabledEmailAddressTemplates}</textarea>
+                  <div class="form-text">
+                    One per line. Exactly one must use an upper-case
+                    <code>SMTP:</code> prefix &mdash; that is the primary reply
+                    address; use lower-case <code>smtp:</code> for the rest.
+                    A template with no local part, such as
+                    <code>SMTP:@contoso.com</code>, uses the recipient's Alias.
+                    Otherwise <code>%m</code> is the alias, <code>%g</code> the
+                    given name, <code>%s</code> the surname and <code>%1g</code>
+                    the first initial &mdash; for example
+                    <code>SMTP:%g.%s@contoso.com</code>.
+                    <strong>Changes here do not touch existing recipients</strong>;
+                    they apply to recipients written afterwards. The domain must
+                    already be an accepted domain.
+                  </div>
+                </div>
                 <button type="submit" class="btn btn-primary">Update
                   Email Address Policy</button>
               </form>

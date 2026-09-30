@@ -802,6 +802,21 @@ function Get-PriorityOptionsHtml {
     return $Html
 }
 
+function ConvertTo-AddressTemplateString {
+    # EnabledEmailAddressTemplates comes back as ProxyAddressTemplate objects, and
+    # which string you get matters: AddressTemplateString is "@contoso.com" while
+    # ProxyAddressTemplateString is "SMTP:@contoso.com". The prefix is what marks the
+    # primary, so rendering the bare form into an editable field and saving it back
+    # would silently drop the primary designation. Prefer the prefixed property, and
+    # fall back to ToString() for a build (or a stub) that returns plain strings.
+    param($Templates)
+    return @($Templates | ForEach-Object {
+            if ($null -eq $_) { return }
+            if ($_.PSObject.Properties['ProxyAddressTemplateString']) { [string]$_.ProxyAddressTemplateString }
+            else { [string]$_ }
+        } | Where-Object { $_ })
+}
+
 function Get-EmailAddressPolicyEditPage {
     # Renders editemailaddresspolicy.html for a given policy identity. Shared
     # by the GET (initial view) and POST (after an update) handlers below.
@@ -845,6 +860,7 @@ single unbroken run, so only 1 to $Max are valid here - it rejects anything furt
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{Name}", (ConvertTo-SafeHtml $Policy.Name))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{Priority}", (ConvertTo-SafeHtml $Policy.Priority))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{RecipientFilter}", (ConvertTo-SafeHtml $Policy.RecipientFilter))
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{EnabledEmailAddressTemplates}", (ConvertTo-SafeHtml ((ConvertTo-AddressTemplateString $Policy.EnabledEmailAddressTemplates) -join "`n")))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {result} -->", $ResultHtml)
     return $HTMLRESPONSE
 }
@@ -1268,6 +1284,30 @@ try {
                             throw "Priority must be a whole number between 1 and $MaxAllowed. Exchange keeps policy priorities in one unbroken run, so it rejects values outside that."
                         }
                         $SetPolicy['Priority'] = $AsInt
+                    }
+
+                    # Address templates. Sent only when they actually differ, for the
+                    # same reason Priority is: resubmitting an untouched form must be a
+                    # no-op rather than a write.
+                    $SubmittedTemplates = [string]$params['EnabledEmailAddressTemplates']
+                    if (-not [string]::IsNullOrWhiteSpace($SubmittedTemplates)) {
+                        $TemplateList = @($SubmittedTemplates -split "`r?`n" |
+                                ForEach-Object { $_.Trim() } |
+                                Where-Object { $_ })
+
+                        # Exchange requires exactly one primary, written with an
+                        # upper-case SMTP: prefix. Checked case-sensitively, because
+                        # "smtp:" and "SMTP:" are the whole distinction, and checked
+                        # here so the operator gets the rule rather than a bare refusal.
+                        $PrimaryCount = @($TemplateList | Where-Object { $_ -cmatch '^SMTP:' }).Count
+                        if ($PrimaryCount -ne 1) {
+                            throw "Exactly one template must be the primary address, written with an upper-case SMTP: prefix - found $PrimaryCount. Use lower-case smtp: for the rest."
+                        }
+
+                        $CurrentTemplates = ConvertTo-AddressTemplateString $Existing.EnabledEmailAddressTemplates
+                        if (($TemplateList -join "`n") -cne ($CurrentTemplates -join "`n")) {
+                            $SetPolicy['EnabledEmailAddressTemplates'] = $TemplateList
+                        }
                     }
 
                     if ($SetPolicy.Keys.Count -le 2) {

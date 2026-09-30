@@ -32,7 +32,7 @@ server. This puts a web UI on top of those cmdlets.
 | **Remote Mailboxes** | Create a new shared, room or equipment mailbox (AD object and mailbox together); enable a mailbox for an existing AD user as regular, shared, room or equipment; convert an existing mailbox between those types; edit display name, alias and remote routing address; add and remove proxy addresses; promote any SMTP alias to primary; turn email address policy management on or off; hide from or show in the GAL; disable the remote mailbox |
 | **Distribution Groups** | Create a group; mail-enable an existing AD group; edit display name and alias; mail-disable (keeps the AD group); delete |
 | **Contacts** | Create, edit external address and display name, delete |
-| **Email Address Policies** | Create with an address template, change priority and recipient filter, delete |
+| **Email Address Policies** | Create with an address template, edit the address templates, change priority and recipient filter, delete |
 | **Accepted Domains** | Add, change domain type, delete |
 
 Every list page has live search and sortable columns. Destructive actions sit behind a
@@ -168,7 +168,7 @@ where you actually want to work.
 .\Test-ExchangeRecipientAdminCenter.ps1
 ```
 
-204 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
+220 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
 every route over real HTTP, so the whole request path is exercised rather than mocked. It
 needs no Exchange, no Active Directory and no admin rights, and it never issues an LDAP query
 — it is safe to run on the management box itself.

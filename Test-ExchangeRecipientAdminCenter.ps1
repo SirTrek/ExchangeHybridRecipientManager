@@ -228,10 +228,19 @@ $prelude = {
         # an <input type="number"> could not hold, blanking the field on submit. Two
         # numerically-prioritised policies sit alongside it, so the valid range for an
         # edit is 1-2 and for a new policy 1-3.
+        # EnabledEmailAddressTemplates really comes back as ProxyAddressTemplate
+        # objects, where ToString() is NOT the prefixed form. The Default Policy
+        # fixture mimics that shape so the prefix-preserving reader is exercised; a
+        # naive [string] cast would render "@{AddressTemplateString=...}" into the
+        # field. Sales Policy uses plain strings to cover the fallback path.
         $all = @(
-            [pscustomobject]@{Name="Default Policy";Priority="Lowest";RecipientFilter="Company -eq 'A&B'"}
-            [pscustomobject]@{Name="Sales Policy";Priority=1;RecipientFilter="Department -eq 'Sales'"}
-            [pscustomobject]@{Name="Ops Policy";Priority=2;RecipientFilter="Department -eq 'Ops'"}
+            [pscustomobject]@{Name="Default Policy";Priority="Lowest";RecipientFilter="Company -eq 'A&B'"
+                EnabledEmailAddressTemplates=@(
+                    [pscustomobject]@{AddressTemplateString="@contoso.com";ProxyAddressTemplateString="SMTP:@contoso.com";IsPrimaryAddress=$true;Prefix="SMTP"})}
+            [pscustomobject]@{Name="Sales Policy";Priority=1;RecipientFilter="Department -eq 'Sales'"
+                EnabledEmailAddressTemplates=@("SMTP:%m@sales.contoso.com","smtp:%g.%s@sales.contoso.com")}
+            [pscustomobject]@{Name="Ops Policy";Priority=2;RecipientFilter="Department -eq 'Ops'"
+                EnabledEmailAddressTemplates=@("SMTP:%m@ops.contoso.com")}
         )
         if ($Identity) { return ($all | Where-Object { $_.Name -eq $Identity }) }
         return $all }
@@ -254,6 +263,9 @@ $prelude = {
                     throw "The specified priority `"$Priority`" isn't valid. The priority should be equivalent to or immediately higher or lower than the priority of an existing policy. Parameter name: Priority"
                 }
             }
+        }
+        if ($PSBoundParameters.ContainsKey('EnabledEmailAddressTemplates')) {
+            Add-Content -Path (Join-Path $env:TEMP "erac_tmpl_test.txt") -Value "$Identity|$(@($EnabledEmailAddressTemplates) -join ';')"
         }
         $sent = if ($PSBoundParameters.ContainsKey('Priority')) { "priority=$Priority" } else { "priority=<omitted>" }
         Add-Content -Path (Join-Path $env:TEMP "erac_setpolicy_test.txt") -Value "$Identity|$sent" }
@@ -919,6 +931,59 @@ try {
 } finally { Remove-Item $noopF -Force -EA SilentlyContinue }
 
 Reset-Mbx
+
+"`n=== 24. Editing a policy's address templates ==="
+# The edit page had no template field at all, so the one change most worth making -
+# repointing a policy that stamps a dead domain - could only be done in PowerShell.
+$tmplF = Join-Path $env:TEMP "erac_tmpl_test.txt"
+if (Test-Path $tmplF) { Remove-Item $tmplF -Force }
+
+$x = Req GET "/editemailaddresspolicy?id=Default%20Policy"
+Check "edit page has a template field" ($x.Body -match 'name="EnabledEmailAddressTemplates"') "no template field"
+Check "  showing the PREFIXED form, not the bare domain" ($x.Body -match '>SMTP:@contoso\.com<') "prefix lost - saving would drop the primary designation"
+Check "  and no object soup from a naive [string] cast" ($x.Body -notmatch 'AddressTemplateString=') "a ProxyAddressTemplate object was stringified raw"
+Check "  the rule is spelled out" ($x.Body -match 'upper-case') "no guidance on the SMTP: prefix"
+Check "  and says it does not touch existing recipients" ($x.Body -match 'do not touch existing recipients') "no warning about scope"
+
+# plain-string templates render too, one per line
+$x = Req GET "/editemailaddresspolicy?id=Sales%20Policy"
+Check "multiple templates render one per line" (($x.Body -match 'SMTP:%m@sales\.contoso\.com') -and ($x.Body -match 'smtp:%g\.%s@sales\.contoso\.com')) "not both rendered"
+
+# an unchanged resubmit must not write
+$x = Req POST "/editemailaddresspolicy" "Name=Default+Policy&RecipientFilter=Company+-eq+%27A%26B%27&EnabledEmailAddressTemplates=SMTP%3A%40contoso.com"
+Start-Sleep -Milliseconds 200
+Check "an unchanged template is not resent" (-not (Test-Path $tmplF)) "sent anyway: $(Get-Content $tmplF -EA SilentlyContinue)"
+
+# the actual change
+$x = Req POST "/editemailaddresspolicy" "Name=Default+Policy&EnabledEmailAddressTemplates=SMTP%3A%40maloufcompanies.com"
+Start-Sleep -Milliseconds 200
+Check "a changed template IS sent" (@(Get-Content $tmplF -EA SilentlyContinue) -contains "Default Policy|SMTP:@maloufcompanies.com") "got: $(Get-Content $tmplF -EA SilentlyContinue)"
+
+# several lines become several templates, and lower-case aliases survive
+Remove-Item $tmplF -Force -EA SilentlyContinue
+$x = Req POST "/editemailaddresspolicy" "Name=Default+Policy&EnabledEmailAddressTemplates=SMTP%3A%40maloufcompanies.com%0D%0Asmtp%3A%40everrest.us%0D%0A%0D%0Asmtp%3A%40linenspa.com"
+Start-Sleep -Milliseconds 200
+Check "multi-line input becomes an array, blanks dropped" (@(Get-Content $tmplF -EA SilentlyContinue) -contains "Default Policy|SMTP:@maloufcompanies.com;smtp:@everrest.us;smtp:@linenspa.com") "got: $(Get-Content $tmplF -EA SilentlyContinue)"
+
+# exactly one primary, checked case-sensitively
+foreach ($case in @(
+  @{b="smtp%3A%40a.com%0D%0Asmtp%3A%40b.com"; n="no upper-case SMTP entry"; m="found 0"},
+  @{b="SMTP%3A%40a.com%0D%0ASMTP%3A%40b.com"; n="two upper-case SMTP entries"; m="found 2"})) {
+  Remove-Item $tmplF -Force -EA SilentlyContinue
+  $x = Req POST "/editemailaddresspolicy" "Name=Default+Policy&EnabledEmailAddressTemplates=$($case.b)"
+  Start-Sleep -Milliseconds 200
+  Check "$($case.n) is refused" ($x.Body -match 'Exactly one template must be the primary') "no refusal banner"
+  Check "  and says how many it found" ($x.Body -match $case.m) "count not reported"
+  Check "  and never reaches Exchange" (-not (Test-Path $tmplF)) "Set-EmailAddressPolicy ran: $(Get-Content $tmplF -EA SilentlyContinue)"
+}
+
+# a blank field is "no change", not "remove all templates"
+Remove-Item $tmplF -Force -EA SilentlyContinue
+$x = Req POST "/editemailaddresspolicy" "Name=Default+Policy&EnabledEmailAddressTemplates=&RecipientFilter=Company+-eq+%27A%26B%27"
+Start-Sleep -Milliseconds 200
+Check "a blank template field changes nothing" (-not (Test-Path $tmplF)) "blanked the policy's templates: $(Get-Content $tmplF -EA SilentlyContinue)"
+
+if (Test-Path $tmplF) { Remove-Item $tmplF -Force }
 
 "`n================ $pass passed, $fail failed ================"
 try{Invoke-WebRequest "$base/exit" -UseBasicParsing -TimeoutSec 5|Out-Null}catch{}
