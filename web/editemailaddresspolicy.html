@@ -125,20 +125,19 @@
                     id="EnabledEmailAddressTemplates"
                     name="EnabledEmailAddressTemplates"
                     rows="4">{EnabledEmailAddressTemplates}</textarea>
-                  <div class="form-text">
-                    One per line. Exactly one must use an upper-case
-                    <code>SMTP:</code> prefix &mdash; that is the primary reply
-                    address; use lower-case <code>smtp:</code> for the rest.
-                    A template with no local part, such as
-                    <code>SMTP:@contoso.com</code>, uses the recipient's Alias.
-                    Otherwise <code>%m</code> is the alias, <code>%g</code> the
-                    given name, <code>%s</code> the surname and <code>%1g</code>
-                    the first initial &mdash; for example
-                    <code>SMTP:%g.%s@contoso.com</code>.
-                    <strong>Changes here do not touch existing recipients</strong>;
-                    they apply to recipients written afterwards. The domain must
-                    already be an accepted domain.
-                  </div>
+                  <div class="form-text">One per line. Exactly one must use an upper-case
+                    <code>SMTP:</code> prefix &mdash; the primary reply address; use
+                    lower-case <code>smtp:</code> for the rest.
+                    <strong>Changes here do not touch existing recipients</strong>, only
+                    ones written afterwards.</div>
+                  <details class="form-text mt-1">
+                    <summary>Template syntax</summary>
+                    <code>%m</code> alias &middot; <code>%g</code> given name &middot;
+                    <code>%s</code> surname &middot; <code>%1g</code> first initial &mdash;
+                    e.g. <code>SMTP:%g.%s@contoso.com</code>. With no local part,
+                    <code>SMTP:@contoso.com</code> uses the alias. The domain must already
+                    be an accepted domain.
+                  </details>
                 </div>
                 <button type="submit" class="btn btn-primary">Update
                   Email Address Policy</button>
@@ -148,22 +147,34 @@
 
           <div class="card mb-4 border-danger">
             <div class="card-header bg-danger text-white">Danger Zone</div>
-            <div class="card-body">
-              <p>Deleting this policy stops it being applied to recipients. Addresses it has already stamped on existing recipients are left in place. This cannot be undone from here.</p>
-              <form method="post" action="/deleteemailaddresspolicy"
-                data-expect="{Name}"
-                data-confirm-message="Delete the policy {Name}? This cannot be undone.">
-                <input type="hidden" name="id" value="{Name}">
-                <div class="mb-3">
-                  <label for="confirmDelete" class="form-label">Type
-                    <strong>{Name}</strong> to confirm</label>
-                  <input type="text" class="form-control" id="confirmDelete"
-                    name="confirmText" autocomplete="off" data-confirm-input>
+            <!-- Same row layout on every edit page: what the action does on the left,
+                 the typed confirmation on the right, starting at the same column as the
+                 controls in Settings. The server re-checks the typed text regardless. -->
+            <ul class="list-group list-group-flush">
+              <li class="list-group-item py-3">
+                <div class="row align-items-center g-3">
+                  <div class="col-md-6">
+                    <strong>Delete this policy</strong>
+                    <div class="form-text mt-1">Stops the policy being applied to recipients. Addresses it has already stamped are left in place. Can't be undone.</div>
+                  </div>
+                  <div class="col-md-6">
+                    <form method="post" action="/deleteemailaddresspolicy"
+                      data-expect="{Name}"
+                      data-confirm-message="Delete the policy {Name}? This cannot be undone.">
+                      <input type="hidden" name="id" value="{Name}">
+                      <label for="confirmDelete" class="form-label small mb-1">Type
+                        <strong>{Name}</strong> to confirm</label>
+                      <div class="input-group">
+                        <input type="text" class="form-control" id="confirmDelete"
+                          name="confirmText" autocomplete="off" data-confirm-input>
+                        <button type="submit" class="btn btn-danger" data-confirm-button
+                          disabled>Delete</button>
+                      </div>
+                    </form>
+                  </div>
                 </div>
-                <button type="submit" class="btn btn-danger" data-confirm-button
-                  disabled>Delete Email Address Policy</button>
-              </form>
-            </div>
+              </li>
+            </ul>
           </div>
 
         </main>

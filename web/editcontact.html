@@ -129,22 +129,34 @@
 
           <div class="card mb-4 border-danger">
             <div class="card-header bg-danger text-white">Danger Zone</div>
-            <div class="card-body">
-              <p>Deleting this contact removes the mail contact object from Active Directory. Anyone who mails the address will get a non-delivery report, and it disappears from the address book. This cannot be undone from here.</p>
-              <form method="post" action="/deletecontact"
-                data-expect="{PrimarySmtpAddress}"
-                data-confirm-message="Delete the contact {PrimarySmtpAddress}? This cannot be undone.">
-                <input type="hidden" name="id" value="{PrimarySmtpAddress}">
-                <div class="mb-3">
-                  <label for="confirmDelete" class="form-label">Type
-                    <strong>{PrimarySmtpAddress}</strong> to confirm</label>
-                  <input type="text" class="form-control" id="confirmDelete"
-                    name="confirmText" autocomplete="off" data-confirm-input>
+            <!-- Same row layout on every edit page: what the action does on the left,
+                 the typed confirmation on the right, starting at the same column as the
+                 controls in Settings. The server re-checks the typed text regardless. -->
+            <ul class="list-group list-group-flush">
+              <li class="list-group-item py-3">
+                <div class="row align-items-center g-3">
+                  <div class="col-md-6">
+                    <strong>Delete this contact</strong>
+                    <div class="form-text mt-1">Removes the contact from Active Directory and the address book. Mail sent to it will bounce. Can't be undone.</div>
+                  </div>
+                  <div class="col-md-6">
+                    <form method="post" action="/deletecontact"
+                      data-expect="{PrimarySmtpAddress}"
+                      data-confirm-message="Delete the contact {PrimarySmtpAddress}? This cannot be undone.">
+                      <input type="hidden" name="id" value="{PrimarySmtpAddress}">
+                      <label for="confirmDelete" class="form-label small mb-1">Type
+                        <strong>{PrimarySmtpAddress}</strong> to confirm</label>
+                      <div class="input-group">
+                        <input type="text" class="form-control" id="confirmDelete"
+                          name="confirmText" autocomplete="off" data-confirm-input>
+                        <button type="submit" class="btn btn-danger" data-confirm-button
+                          disabled>Delete</button>
+                      </div>
+                    </form>
+                  </div>
                 </div>
-                <button type="submit" class="btn btn-danger" data-confirm-button
-                  disabled>Delete Contact</button>
-              </form>
-            </div>
+              </li>
+            </ul>
           </div>
 
         </main>

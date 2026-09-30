@@ -208,15 +208,15 @@
           </div>
 
           <div class="card mb-4">
-            <div
-              class="card-header d-flex justify-content-between align-items-center">
-              <span>Email Addresses (Proxy Addresses)</span>
-              <button type="button" class="btn btn-primary btn-sm"
-                data-bs-toggle="modal" data-bs-target="#addAlias">
-                Add alias
-              </button>
-            </div>
+            <div class="card-header">Email Addresses (Proxy Addresses)</div>
             <div class="card-body">
+              <!-- Actions and search share one row: table-tools.js puts its search box
+                   into a data-table-toolbar placed directly before a table, after the
+                   buttons already in it. Button and search box are the same height. -->
+              <div class="d-flex align-items-center gap-2 mb-2" data-table-toolbar>
+                <button type="button" class="btn btn-primary flex-shrink-0"
+                  data-bs-toggle="modal" data-bs-target="#addAlias">Add alias</button>
+              </div>
               <table class="table table-striped table-hover">
                 <thead>
                   <tr>
@@ -274,26 +274,35 @@
 
           <div class="card mb-4 border-danger">
             <div class="card-header bg-danger text-white">Danger Zone</div>
-            <div class="card-body">
-              <p>Disabling this Remote Mailbox removes its Exchange attributes
-                from Active Directory. It will no longer sync as a Remote
-                Mailbox. The Exchange Online mailbox itself is not deleted by
-                this action.</p>
-              <form method="post" action="/editremotemailbox" id="disableForm"
-                data-expect="{PrimarySmtpAddress}"
-                data-confirm-message="This will disable the Remote Mailbox for {PrimarySmtpAddress}. Continue?">
-                <input type="hidden" name="id" value="{id}">
-                <input type="hidden" name="Action" value="disable">
-                <div class="mb-3">
-                  <label for="confirmAddress" class="form-label">Type
-                    <strong>{PrimarySmtpAddress}</strong> to confirm</label>
-                  <input type="text" class="form-control" id="confirmAddress"
-                    name="confirmAddress" autocomplete="off" data-confirm-input>
+            <!-- Same row layout on every edit page: what the action does on the left,
+                 the typed confirmation on the right, starting at the same column as the
+                 controls in Settings. The server re-checks the typed text regardless. -->
+            <ul class="list-group list-group-flush">
+              <li class="list-group-item py-3">
+                <div class="row align-items-center g-3">
+                  <div class="col-md-6">
+                    <strong>Disable remote mailbox</strong>
+                    <div class="form-text mt-1">Removes this mailbox's Exchange attributes from Active Directory, so it stops syncing as a remote mailbox. The Exchange Online mailbox itself isn't deleted.</div>
+                  </div>
+                  <div class="col-md-6">
+                    <form method="post" action="/editremotemailbox"
+                      data-expect="{PrimarySmtpAddress}"
+                      data-confirm-message="This will disable the Remote Mailbox for {PrimarySmtpAddress}. Continue?">
+                      <input type="hidden" name="id" value="{id}">
+                      <input type="hidden" name="Action" value="disable">
+                      <label for="confirmAddress" class="form-label small mb-1">Type
+                        <strong>{PrimarySmtpAddress}</strong> to confirm</label>
+                      <div class="input-group">
+                        <input type="text" class="form-control" id="confirmAddress"
+                          name="confirmAddress" autocomplete="off" data-confirm-input>
+                        <button type="submit" class="btn btn-danger" data-confirm-button
+                          disabled>Disable</button>
+                      </div>
+                    </form>
+                  </div>
                 </div>
-                <button type="submit" class="btn btn-danger" id="disableButton"
-                  data-confirm-button disabled>Disable Remote Mailbox</button>
-              </form>
-            </div>
+              </li>
+            </ul>
           </div>
 
         </main>

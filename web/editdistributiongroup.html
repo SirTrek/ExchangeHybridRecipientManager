@@ -125,56 +125,59 @@
             </div>
           </div>
 
-          <div class="card mb-4 border-warning">
-            <div class="card-header bg-warning">Mail-disable this group</div>
-            <div class="card-body">
-              <p>Mail-disabling strips the Exchange attributes but <strong>keeps the
-                Active Directory group</strong>, along with its membership and anything
-                it grants access to. Mail sent to the address will bounce and the group
-                leaves the address book.</p>
-              <p class="mb-3 text-muted">This is the reversible option: you can put the
-                address back later with <em>Mail-Enable a Group</em> on the Distribution
-                Groups page. If you only want the group to stop receiving mail, use this
-                rather than Delete below.</p>
-              <form method="post" action="/disabledistributiongroup"
-                data-expect="{PrimarySmtpAddress}"
-                data-confirm-message="Mail-disable the group {PrimarySmtpAddress}? The AD group is kept and this can be reversed with Mail-Enable a Group.">
-                <input type="hidden" name="id" value="{PrimarySmtpAddress}">
-                <div class="mb-3">
-                  <label for="confirmDisable" class="form-label">Type
-                    <strong>{PrimarySmtpAddress}</strong> to confirm</label>
-                  <input type="text" class="form-control" id="confirmDisable"
-                    name="confirmText" autocomplete="off" data-confirm-input>
-                </div>
-                <button type="submit" class="btn btn-warning" data-confirm-button
-                  disabled>Mail-Disable Distribution Group</button>
-              </form>
-            </div>
-          </div>
-
           <div class="card mb-4 border-danger">
             <div class="card-header bg-danger text-white">Danger Zone</div>
-            <div class="card-body">
-              <p>Deleting this group removes the group object from Active Directory
-                entirely - not just its email address. If this is a mail-enabled
-                <strong>security</strong> group, any permissions or access granted
-                through it are lost as well. Mail sent to the address will bounce.
-                <strong>This cannot be undone from here</strong>, and unlike
-                mail-disabling above it cannot be reversed by re-adding the address.</p>
-              <form method="post" action="/deletedistributiongroup"
-                data-expect="{PrimarySmtpAddress}"
-                data-confirm-message="Delete the group {PrimarySmtpAddress}? This removes the AD group entirely and cannot be undone.">
-                <input type="hidden" name="id" value="{PrimarySmtpAddress}">
-                <div class="mb-3">
-                  <label for="confirmDelete" class="form-label">Type
-                    <strong>{PrimarySmtpAddress}</strong> to confirm</label>
-                  <input type="text" class="form-control" id="confirmDelete"
-                    name="confirmText" autocomplete="off" data-confirm-input>
+            <!-- Same row layout on every edit page: what the action does on the left,
+                 the typed confirmation on the right, starting at the same column as the
+                 controls in Settings. The server re-checks the typed text regardless. -->
+            <ul class="list-group list-group-flush">
+              <li class="list-group-item py-3">
+                <div class="row align-items-center g-3">
+                  <div class="col-md-6">
+                    <strong>Mail-disable this group</strong>
+                    <div class="form-text mt-1">Removes the email address but keeps the Active Directory group, its members and anything it grants access to. Reversible &mdash; mail-enable it again with <em>Mail-Enable a Group</em> on the Distribution Groups page.</div>
+                  </div>
+                  <div class="col-md-6">
+                    <form method="post" action="/disabledistributiongroup"
+                      data-expect="{PrimarySmtpAddress}"
+                      data-confirm-message="Mail-disable the group {PrimarySmtpAddress}? The AD group is kept and this can be reversed with Mail-Enable a Group.">
+                      <input type="hidden" name="id" value="{PrimarySmtpAddress}">
+                      <label for="confirmDisable" class="form-label small mb-1">Type
+                        <strong>{PrimarySmtpAddress}</strong> to confirm</label>
+                      <div class="input-group">
+                        <input type="text" class="form-control" id="confirmDisable"
+                          name="confirmText" autocomplete="off" data-confirm-input>
+                        <button type="submit" class="btn btn-outline-danger" data-confirm-button
+                          disabled>Mail-disable</button>
+                      </div>
+                    </form>
+                  </div>
                 </div>
-                <button type="submit" class="btn btn-danger" data-confirm-button
-                  disabled>Delete Distribution Group</button>
-              </form>
-            </div>
+              </li>
+              <li class="list-group-item py-3">
+                <div class="row align-items-center g-3">
+                  <div class="col-md-6">
+                    <strong>Delete this group</strong>
+                    <div class="form-text mt-1">Removes the group from Active Directory entirely. If it's a mail-enabled security group, any access it grants is lost too. Can't be undone.</div>
+                  </div>
+                  <div class="col-md-6">
+                    <form method="post" action="/deletedistributiongroup"
+                      data-expect="{PrimarySmtpAddress}"
+                      data-confirm-message="Delete the group {PrimarySmtpAddress}? This removes the AD group entirely and cannot be undone.">
+                      <input type="hidden" name="id" value="{PrimarySmtpAddress}">
+                      <label for="confirmDelete" class="form-label small mb-1">Type
+                        <strong>{PrimarySmtpAddress}</strong> to confirm</label>
+                      <div class="input-group">
+                        <input type="text" class="form-control" id="confirmDelete"
+                          name="confirmText" autocomplete="off" data-confirm-input>
+                        <button type="submit" class="btn btn-danger" data-confirm-button
+                          disabled>Delete</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              </li>
+            </ul>
           </div>
 
         </main>

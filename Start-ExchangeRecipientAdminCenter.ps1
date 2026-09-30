@@ -83,6 +83,19 @@ function ConvertTo-SafeHtml {
     }
 }
 
+function ConvertTo-BareSmtpAddress {
+    # RemoteRoutingAddress and ExternalEmailAddress are ProxyAddress values, and their
+    # string form carries the prefix: "SMTP:user@tenant.mail.onmicrosoft.com".
+    # Rendered into an <input type="email">, that fails the browser's own validation -
+    # "A part followed by '@' should not contain the symbol ':'" - so the whole
+    # Properties form refused to submit and nothing on the page could be saved. Strip
+    # an smtp: prefix for display; both cmdlets accept the bare address back.
+    param($Value)
+    $Text = [string]$Value
+    if ($Text -match '^smtp:(?<addr>.+)$') { return $Matches['addr'] }
+    return $Text
+}
+
 function ConvertFrom-HttpQuery {
     # Shared parser for GET query strings and POST form bodies.
     #
@@ -377,7 +390,7 @@ function Get-RemoteMailboxEditPage {
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{DisplayName}", (ConvertTo-SafeHtml $Mailbox.DisplayName))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{PrimarySmtpAddress}", $SafeId)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{Alias}", (ConvertTo-SafeHtml $Mailbox.Alias))
-    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{RemoteRoutingAddress}", (ConvertTo-SafeHtml $Mailbox.RemoteRoutingAddress))
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{RemoteRoutingAddress}", (ConvertTo-SafeHtml (ConvertTo-BareSmtpAddress $Mailbox.RemoteRoutingAddress)))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{id}", $SafeId)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{recipient_type_details}", (ConvertTo-SafeHtml $Mailbox.RecipientTypeDetails))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_type} -->", $HTMLROWS_TYPE)
@@ -771,7 +784,7 @@ function Get-ContactEditPage {
     $HTMLRESPONSE = Read-Template "editcontact.html"
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{DisplayName}", (ConvertTo-SafeHtml $Contact.DisplayName))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{PrimarySmtpAddress}", (ConvertTo-SafeHtml $Contact.PrimarySmtpAddress))
-    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{ExternalEmailAddress}", (ConvertTo-SafeHtml $Contact.ExternalEmailAddress))
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{ExternalEmailAddress}", (ConvertTo-SafeHtml (ConvertTo-BareSmtpAddress $Contact.ExternalEmailAddress)))
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {result} -->", $ResultHtml)
     return $HTMLRESPONSE
 }
@@ -1385,13 +1398,26 @@ try {
             }
 
             "POST /deleteaccepteddomain" {
-                # Process Delete Accepted Domain - one Delete button per row on
-                # accepteddomains.html, guarded by a JS confirm() dialog.
+                # Danger Zone on editaccepteddomain.html. Deleting an accepted domain
+                # stops Exchange accepting mail for the whole namespace, so it gets the
+                # same server-side re-check as every other delete: the typed text must
+                # match the domain's DomainName. This route used to delete whatever it
+                # was sent, behind nothing but a browser confirm() dialog.
                 $params = ConvertFrom-HttpQuery (Read-RequestBody $REQUEST)
+                $Identity = $params['id']
 
                 try {
-                    Remove-AcceptedDomain -Identity $params['name'] -Confirm:$false -ErrorAction Stop
-                    $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Accepted Domain $($params['name']) deleted")
+                    $Target = if ([string]::IsNullOrWhiteSpace($Identity)) { $null } else { Get-AcceptedDomain -Identity $Identity -ErrorAction SilentlyContinue }
+                    if (-not $Target) {
+                        $HTML_RESULT = $HTML_WARN.Replace("{result}", "Accepted domain '$(ConvertTo-SafeHtml $Identity)' not found - nothing was deleted")
+                    }
+                    elseif ($params['confirmText'] -ne [string]$Target.DomainName) {
+                        $HTML_RESULT = $HTML_WARN.Replace("{result}", "Confirmation text didn't match $(ConvertTo-SafeHtml $Target.DomainName) - nothing was deleted")
+                    }
+                    else {
+                        Remove-AcceptedDomain -Identity $Identity -Confirm:$false -ErrorAction Stop
+                        $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Accepted domain $(ConvertTo-SafeHtml $Target.DomainName) deleted")
+                    }
                 }
                 catch {
                     $HTML_RESULT = $HTML_WARN.Replace("{result}", (ConvertTo-SafeHtml $_.Exception.Message))

@@ -113,9 +113,8 @@
                     Domain</label>
                   <input type="text" class="form-control" id="DomainNameDisplay"
                     value="{DomainName}" disabled>
-                  <div class="form-text">Exchange fixes the SMTP namespace when the
-                    domain is created, so it can't be changed here. To use a different
-                    namespace, add a new accepted domain and delete this one.</div>
+                  <div class="form-text">Fixed when the domain is created. To use a
+                    different namespace, add a new accepted domain and delete this one.</div>
                 </div>
                 <div class="mb-3">
                   <label for="DomainType" class="form-label">Domain
@@ -132,25 +131,41 @@
 
           <div class="card mb-4 border-danger">
             <div class="card-header bg-danger text-white">Danger Zone</div>
-            <div class="card-body">
-              <p>Deleting this Accepted Domain removes it from the
-                organization's accepted domain list. Mail flow depending on
-                this domain will stop working. This cannot be undone from
-                here.</p>
-              <form method="post" action="/deleteaccepteddomain"
-                data-confirm="Delete accepted domain {DomainName}? This cannot be undone from here."
-                onsubmit="return confirm(this.dataset.confirm)">
-                <input type="hidden" name="name" value="{Name}">
-                <button type="submit" class="btn btn-danger">Delete Accepted
-                  Domain</button>
-              </form>
-            </div>
+            <!-- Same row layout on every edit page: what the action does on the left,
+                 the typed confirmation on the right, starting at the same column as the
+                 controls in Settings. The server re-checks the typed text regardless. -->
+            <ul class="list-group list-group-flush">
+              <li class="list-group-item py-3">
+                <div class="row align-items-center g-3">
+                  <div class="col-md-6">
+                    <strong>Delete this accepted domain</strong>
+                    <div class="form-text mt-1">Removes the domain from the organization's accepted domains, so Exchange stops accepting mail for it. Can't be undone.</div>
+                  </div>
+                  <div class="col-md-6">
+                    <form method="post" action="/deleteaccepteddomain"
+                      data-expect="{DomainName}"
+                      data-confirm-message="Delete the accepted domain {DomainName}? Exchange will stop accepting mail for it. This cannot be undone.">
+                      <input type="hidden" name="id" value="{Name}">
+                      <label for="confirmDelete" class="form-label small mb-1">Type
+                        <strong>{DomainName}</strong> to confirm</label>
+                      <div class="input-group">
+                        <input type="text" class="form-control" id="confirmDelete"
+                          name="confirmText" autocomplete="off" data-confirm-input>
+                        <button type="submit" class="btn btn-danger" data-confirm-button
+                          disabled>Delete</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              </li>
+            </ul>
           </div>
 
         </main>
       </div>
     </div>
 
+    <script src="danger-zone.js"></script>
     <script>
       try { feather.replace(); } catch (e) { console.warn('feather.replace() failed:', e); }
     </script>

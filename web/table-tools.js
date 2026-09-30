@@ -46,16 +46,26 @@
   }
 
   function addSearchBox(table) {
-    var wrapper = document.createElement('div');
-    wrapper.className = 'mb-2';
-
     var input = document.createElement('input');
     input.type = 'search';
     input.className = 'form-control';
     input.placeholder = 'Search...';
-    wrapper.appendChild(input);
+    input.setAttribute('aria-label', 'Search this table');
 
-    table.parentNode.insertBefore(wrapper, table);
+    // A page can give a table a toolbar: an element with data-table-toolbar placed
+    // directly before it. The search box joins that row after the page's own buttons
+    // and takes the remaining width, so actions and search read as one line. Without
+    // a toolbar the search box gets a full-width row of its own, as before.
+    var toolbar = table.previousElementSibling;
+    if (toolbar && toolbar.hasAttribute('data-table-toolbar')) {
+      input.classList.add('flex-grow-1');
+      toolbar.appendChild(input);
+    } else {
+      var wrapper = document.createElement('div');
+      wrapper.className = 'mb-2';
+      wrapper.appendChild(input);
+      table.parentNode.insertBefore(wrapper, table);
+    }
 
     input.addEventListener('input', function () {
       var query = input.value.trim().toLowerCase();

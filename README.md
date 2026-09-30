@@ -168,7 +168,7 @@ where you actually want to work.
 .\Test-ExchangeRecipientAdminCenter.ps1
 ```
 
-220 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
+301 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
 every route over real HTTP, so the whole request path is exercised rather than mocked. It
 needs no Exchange, no Active Directory and no admin rights, and it never issues an LDAP query
 — it is safe to run on the management box itself.

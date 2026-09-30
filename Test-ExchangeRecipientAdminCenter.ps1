@@ -74,7 +74,7 @@ $prelude = {
         # preselect is tested against something other than the default.
         $Rtd = if ($Identity -like "*shared*") { "RemoteSharedMailbox" } else { "RemoteUserMailbox" }
         [pscustomobject]@{ Name=$DN;DisplayName=$DN;Alias="ob";PrimarySmtpAddress=$primary
-            RemoteRoutingAddress="ob@t.mail.onmicrosoft.com";RecipientTypeDetails=$Rtd
+            RemoteRoutingAddress="SMTP:ob@t.mail.onmicrosoft.com";RecipientTypeDetails=$Rtd
             WhenChanged="2026-08-26";HiddenFromAddressListsEnabled=$false
             EmailAddressPolicyEnabled=$policy
             EmailAddresses=@("SMTP:$primary","smtp:o'brien.alt@contoso.com",
@@ -141,7 +141,8 @@ $prelude = {
     function New-AcceptedDomain {
         [CmdletBinding(SupportsShouldProcess)] param([string]$Name,[string]$DomainName,[string]$DomainType) }
     function Remove-AcceptedDomain {
-        [CmdletBinding(SupportsShouldProcess)] param([string]$Identity) }
+        [CmdletBinding(SupportsShouldProcess)] param([string]$Identity)
+        Add-Content -Path (Join-Path $env:TEMP "erac_deletes_test.txt") -Value "domain:$Identity" }
 
     function Get-DistributionGroup {
         [CmdletBinding()] param([string]$Identity,[string]$Filter,$ResultSize)
@@ -211,7 +212,7 @@ $prelude = {
     function Get-MailContact {
         [CmdletBinding()] param([string]$Identity,[string]$Filter,$ResultSize)
         if ($Identity -and $Identity -notlike "*contoso.com*") { return $null }
-        [pscustomobject]@{DisplayName=$DN;PrimarySmtpAddress=$SMTP;RecipientType="MailContact";ExternalEmailAddress="x@y.com"} }
+        [pscustomobject]@{DisplayName=$DN;PrimarySmtpAddress=$SMTP;RecipientType="MailContact";ExternalEmailAddress="SMTP:x@y.com"} }
     function Set-MailContact {
         [CmdletBinding(SupportsShouldProcess)] param([string]$Identity,[string]$DisplayName,
             [string]$ExternalEmailAddress,[string]$Alias,[string]$Name,[bool]$HiddenFromAddressListsEnabled) }
@@ -424,7 +425,7 @@ if (Test-Path $delLog) { Remove-Item $delLog -Force }
 
 $x = Req GET "/editdistributiongroup?id=o%27brien%40contoso.com"
 Check "mail-disable form offered alongside delete" ($x.Body -match [regex]::Escape('action="/disabledistributiongroup"') -and $x.Body -match [regex]::Escape('action="/deletedistributiongroup"')) "one of the two forms is missing"
-Check "the two actions are visually distinguished" ($x.Body -match 'border-warning' -and $x.Body -match 'border-danger') "cards not differentiated"
+Check "the two actions are visually distinguished" (($x.Body -match '(?s)action="/disabledistributiongroup".*?class="btn btn-outline-danger"') -and ($x.Body -match '(?s)action="/deletedistributiongroup".*?class="btn btn-danger"')) "reversible and permanent actions look the same"
 Check "mail-disable is described as reversible" ($x.Body -match 'Mail-Enable a Group') "reversibility not explained"
 
 Req POST "/disabledistributiongroup" "id=o%27brien%40contoso.com&confirmText=wrong" | Out-Null
@@ -513,8 +514,23 @@ Check "  and no leftover empty header column" (([regex]::Matches($x.Body,'<th sc
 Check "  domains still listed and clickable" ($x.Body -match 'href="/editaccepteddomain\?id=contoso\.com"') "rows missing"
 $x = Req GET "/editaccepteddomain?id=contoso.com"
 Check "delete still offered in the Danger Zone" ($x.Body -match 'action="/deleteaccepteddomain"' -and $x.Body -match 'Danger Zone') "delete no longer reachable at all"
-$x = Req POST "/deleteaccepteddomain" "name=contoso.com"
-Check "  and the route still works" ($x.Status -eq 200 -and $x.Body -match 'alert-success') "status=$($x.Status)"
+# The route used to delete whatever it was sent, behind nothing but a browser
+# confirm(). It now re-checks the typed domain name like every other delete.
+$delLog = Join-Path $env:TEMP "erac_deletes_test.txt"
+if (Test-Path $delLog) { Remove-Item $delLog -Force }
+$x = Req POST "/deleteaccepteddomain" "id=contoso.com"
+Check "  a delete with no confirmation is refused" ($x.Body -match "didn&#39;t match|didn't match") "no refusal banner"
+$x = Req POST "/deleteaccepteddomain" "id=contoso.com&confirmText=contoso.co"
+Check "  a near-miss confirmation is refused" ($x.Body -match "didn&#39;t match|didn't match") "no refusal banner"
+Start-Sleep -Milliseconds 200
+Check "  and nothing is deleted" (-not (Test-Path $delLog)) "Remove-AcceptedDomain ran: $(Get-Content $delLog -EA SilentlyContinue)"
+$x = Req POST "/deleteaccepteddomain" "id=ghost.example&confirmText=ghost.example"
+Check "  a missing domain degrades gracefully" ($x.Status -eq 200 -and $x.Body -match 'not found') "status=$($x.Status)"
+$x = Req POST "/deleteaccepteddomain" "id=contoso.com&confirmText=contoso.com"
+Start-Sleep -Milliseconds 200
+Check "  the correct domain name deletes it" (@(Get-Content $delLog -EA SilentlyContinue) -contains "domain:contoso.com") "log=$(Get-Content $delLog -EA SilentlyContinue)"
+Check "  and reports success" ($x.Status -eq 200 -and $x.Body -match 'alert-success') "status=$($x.Status)"
+if (Test-Path $delLog) { Remove-Item $delLog -Force }
 
 "`n=== 16. Priority is offered as valid choices only (the reported failure) ==="
 $setLog = Join-Path $env:TEMP "erac_setpolicy_test.txt"
@@ -1015,6 +1031,56 @@ foreach ($u in @("/remotemailboxes","/distributiongroups","/contacts","/emailadd
   $y = Req GET $u
   Check "no text-bg-* on $u" ($y.Body -notmatch 'text-bg-') "text-bg-* present"
 }
+
+"`n=== 26. Edit pages: aligned danger zones, table toolbar, saveable address fields ==="
+# Two ProxyAddress values render with their prefix - "SMTP:user@tenant..." - and sat
+# in <input type="email"> fields. A colon before the @ fails the browser's own
+# validation, so the Properties form on those pages refused to submit at all.
+$x = Req GET "/editremotemailbox?id=o%27brien%40contoso.com"
+Check "routing address renders without its SMTP: prefix" ($x.Body -match 'name="RemoteRoutingAddress" value="ob@t\.mail\.onmicrosoft\.com"') "value not bare"
+Check "  so the email field can validate" ($x.Body -notmatch 'value="SMTP:ob@') "prefix still rendered"
+$y = Req GET "/editcontact?id=o%27brien%40contoso.com"
+Check "contact external address renders without its prefix" ($y.Body -match 'name="ExternalEmailAddress"\s+value="x@y\.com"') "value not bare"
+Check "  so the email field can validate" ($y.Body -notmatch 'value="SMTP:x@y') "prefix still rendered"
+
+# Add alias shares a toolbar row with the search box instead of sitting alone at the
+# far end of the card header.
+Check "address card header is just its title" ($x.Body -match '<div class="card-header">Email Addresses \(Proxy Addresses\)</div>') "header still carries controls"
+Check "  Add alias sits in a toolbar directly above the table" ($x.Body -match '(?s)<div[^>]*data-table-toolbar[^>]*>\s*<button[^>]*data-bs-target="#addAlias"[^>]*>Add alias</button>\s*</div>\s*<table class="table') "toolbar missing or not adjacent to the table"
+Check "  at full size, level with the search box" ($x.Body -match '<button type="button" class="btn btn-primary flex-shrink-0"') "button size differs from the search input"
+$js = Req GET "/table-tools.js"
+Check "  and table-tools.js knows to join that toolbar" ($js.Body -match 'data-table-toolbar') "search box would still get its own row"
+
+# every edit page: one Danger Zone, same row layout, typed confirmation joined to its button
+foreach ($pg in @(
+  @{u="/editremotemailbox?id=o%27brien%40contoso.com";     n=1},
+  @{u="/editdistributiongroup?id=o%27brien%40contoso.com"; n=2},
+  @{u="/editcontact?id=o%27brien%40contoso.com";           n=1},
+  @{u="/editemailaddresspolicy?id=Sales%20Policy";         n=1},
+  @{u="/editaccepteddomain?id=contoso.com";                n=1})) {
+  $y = Req GET $pg.u
+  $pn = $pg.u.Split('?')[0]
+  $dz = [regex]::Match($y.Body, '(?s)<div class="card-header bg-danger text-white">Danger Zone</div>.*?</ul>').Value
+  $zones = ([regex]::Matches($y.Body, '>Danger Zone</div>')).Count
+  Check "$pn has exactly one Danger Zone" ($zones -eq 1 -and $dz.Length -gt 0) "found $zones"
+  Check "  with $($pg.n) action row(s)" (([regex]::Matches($dz, 'class="list-group-item')).Count -eq $pg.n) "rows: $(([regex]::Matches($dz, 'class=\"list-group-item')).Count)"
+  Check "  each a type-to-confirm form" (([regex]::Matches($dz, '<form method="post"[^>]*data-expect="')).Count -eq $pg.n) "a form lacks data-expect"
+  Check "  confirm box and button joined in an input-group" (([regex]::Matches($dz, '(?s)<div class="input-group">\s*<input[^>]*data-confirm-input>\s*<button[^>]*data-confirm-button')).Count -eq $pg.n) "not joined"
+  Check "  same column split as Settings" (([regex]::Matches($dz, '<div class="col-md-6">')).Count -eq (2 * $pg.n)) "column split differs"
+  Check "  no bare confirm() delete" ($dz -notmatch 'onsubmit=') "an unguarded confirm() form remains"
+  Check "  loads the type-to-confirm script" ($y.Body -match '<script src="danger-zone.js"></script>') "danger-zone.js not loaded"
+  Check "  no separate warning card" ($y.Body -notmatch 'border-warning') "a second destructive card remains"
+}
+
+$y = Req GET "/editaccepteddomain?id=contoso.com"
+Check "accepted domain asks for the domain name itself" ($y.Body -match 'data-expect="contoso\.com"') "confirmation not keyed on DomainName"
+
+$y = Req GET "/editdistributiongroup?id=o%27brien%40contoso.com"
+Check "the reversible group action is listed before the permanent one" ($y.Body.IndexOf('action="/disabledistributiongroup"') -lt $y.Body.IndexOf('action="/deletedistributiongroup"')) "delete comes first"
+
+$y = Req GET "/editemailaddresspolicy?id=Sales%20Policy"
+Check "template help keeps the one rule inline" ($y.Body -match 'upper-case' -and $y.Body -match 'do not touch existing recipients') "rule or scope warning missing"
+Check "  and folds the token reference away" ($y.Body -match '(?s)<details[^>]*>\s*<summary>Template syntax</summary>.*?%1g.*?</details>') "token reference not in a details block"
 
 "`n================ $pass passed, $fail failed ================"
 try{Invoke-WebRequest "$base/exit" -UseBasicParsing -TimeoutSec 5|Out-Null}catch{}
