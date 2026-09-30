@@ -88,69 +88,72 @@
         </nav>
 
         <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
-          <div
-            class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+          <div class="pt-3 pb-2 mb-3 border-bottom">
             <h2 class="h2">Distribution Groups</h2>
-          </div>
-          <div
-            class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center">
-            <p>Manage Exchange-related information for distribution groups in
-              your local Active Directory or mail-enable an existing group in
-              Active Directory.</p>
+            <p class="text-muted mb-1">Distribution and mail-enabled security groups in your local Active Directory. Create a new one, or mail-enable a group that already exists.</p>
           </div>
 
           <!-- {result} -->
 
-          <div class="mb-3">
-            <a class="btn btn-primary" href="#" role="button"
-              data-bs-toggle="modal" data-bs-target="#addGroup">Add a Group</a>
-            <a class="btn btn-primary" href="#" role="button"
-              data-bs-toggle="modal"
-              data-bs-target="#mailEnableGroup">Mail-Enable a Group</a>
-          </div>
+          <div class="card mb-4">
+            <div class="card-body">
+              <!-- Each tab has its own table, so each gets its own search box from
+                   table-tools.js; the actions sit above the tabs they apply to. -->
+              <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                <button type="button" class="btn btn-primary" data-bs-toggle="modal"
+                  data-bs-target="#addGroup">New group</button>
+                <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal"
+                  data-bs-target="#mailEnableGroup">Mail-enable a group</button>
+              </div>
 
-          <nav>
-            <div class="nav nav-tabs" id="nav-tab" role="tablist">
-              <button class="nav-link active" id="nav-dl-tab"
-                data-bs-toggle="tab" data-bs-target="#nav-dl" type="button"
-                role="tab" aria-controls="nav-dl"
-                aria-selected="true">Distribution Lists</button>
-              <button class="nav-link" id="nav-mes-tab" data-bs-toggle="tab"
-                data-bs-target="#nav-mes" type="button" role="tab"
-                aria-controls="nav-mes" aria-selected="false">Mail-enabled
-                security</button>
-            </div>
-          </nav>
-          <div class="tab-content" id="nav-tabContent">
-            <div class="tab-pane fade show active" id="nav-dl" role="tabpanel"
-              aria-labelledby="nav-dl-tab" tabindex="0">
-              <table class="table table-striped table-hover">
-                <thead>
-                  <tr>
-                    <th scope="col">Group Name</th>
-                    <th scope="col">Group email</th>
-                    <th scope="col">Created on</th>
-                  </tr>
-                </thead>
-                <tbody class="table-group-divider">
-                  <!-- {row_dl} -->
-                </tbody>
-              </table>
-            </div>
-            <div class="tab-pane fade" id="nav-mes" role="tabpanel"
-              aria-labelledby="nav-mes-tab" tabindex="0">
-              <table class="table table-striped table-hover">
-                <thead>
-                  <tr>
-                    <th scope="col">Group Name</th>
-                    <th scope="col">Group email</th>
-                    <th scope="col">Created on</th>
-                  </tr>
-                </thead>
-                <tbody class="table-group-divider">
-                  <!-- {row_mes} -->
-                </tbody>
-              </table>
+              <nav>
+                <div class="nav nav-tabs" id="nav-tab" role="tablist">
+                  <button class="nav-link active" id="nav-dl-tab"
+                    data-bs-toggle="tab" data-bs-target="#nav-dl" type="button"
+                    role="tab" aria-controls="nav-dl"
+                    aria-selected="true">Distribution lists</button>
+                  <button class="nav-link" id="nav-mes-tab" data-bs-toggle="tab"
+                    data-bs-target="#nav-mes" type="button" role="tab"
+                    aria-controls="nav-mes" aria-selected="false">Mail-enabled
+                    security</button>
+                </div>
+              </nav>
+              <div class="tab-content pt-3" id="nav-tabContent">
+                <div class="tab-pane fade show active" id="nav-dl" role="tabpanel"
+                  aria-labelledby="nav-dl-tab" tabindex="0">
+                  <div class="table-responsive">
+                    <table class="table table-striped table-hover mb-0">
+                      <thead>
+                        <tr>
+                          <th scope="col">Group name</th>
+                          <th scope="col">Email address</th>
+                          <th scope="col">Created</th>
+                        </tr>
+                      </thead>
+                      <tbody class="table-group-divider">
+                        <!-- {row_dl} -->
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div class="tab-pane fade" id="nav-mes" role="tabpanel"
+                  aria-labelledby="nav-mes-tab" tabindex="0">
+                  <div class="table-responsive">
+                    <table class="table table-striped table-hover mb-0">
+                      <thead>
+                        <tr>
+                          <th scope="col">Group name</th>
+                          <th scope="col">Email address</th>
+                          <th scope="col">Created</th>
+                        </tr>
+                      </thead>
+                      <tbody class="table-group-divider">
+                        <!-- {row_mes} -->
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </main>
@@ -163,7 +166,7 @@
       <div class="modal-dialog">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title" id="addGroupLabel">Add a New Group</h5>
+            <h5 class="modal-title" id="addGroupLabel">New group</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal"
               aria-label="Close"></button>
           </div>
@@ -206,8 +209,7 @@
       <div class="modal-dialog">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title" id="mailEnableGroupLabel">Mail-Enable a
-              Group</h5>
+            <h5 class="modal-title" id="mailEnableGroupLabel">Mail-enable a group</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal"
               aria-label="Close"></button>
           </div>

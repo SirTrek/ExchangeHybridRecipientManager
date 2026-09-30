@@ -110,7 +110,14 @@ $prelude = {
                 # which is the silent no-op the read-back check exists to catch.
                 if (-not (Test-Path (Join-Path $env:TEMP "erac_primary_noop.txt"))) { $primary = $PrimarySmtpAddress }
             }
-            if ($PSBoundParameters.ContainsKey('EmailAddressPolicyEnabled')) { $policy = $EmailAddressPolicyEnabled }
+            if ($PSBoundParameters.ContainsKey('EmailAddressPolicyEnabled')) {
+                $policy = $EmailAddressPolicyEnabled
+                # Turning policy management on applies the policy in the same write, as
+                # Exchange does. The fixture's Default Policy template is
+                # SMTP:@contoso.com and this mailbox's alias is "ob", so the primary
+                # becomes ob@contoso.com - replacing whatever was set by hand.
+                if ($EmailAddressPolicyEnabled) { $primary = "ob@contoso.com" }
+            }
             Set-Content -Path $st -Value "$primary|$policy"
         } }
     function Enable-RemoteMailbox {
@@ -225,6 +232,7 @@ $prelude = {
 
     function Get-EmailAddressPolicy {
         [CmdletBinding()] param([string]$Identity)
+        if (Test-Path (Join-Path $env:TEMP "erac_policies_fail.txt")) { throw "Active Directory operation failed." }
         # The default policy's priority really is "Lowest", not a number - which is what
         # an <input type="number"> could not hold, blanking the field on submit. Two
         # numerically-prioritised policies sit alongside it, so the valid range for an
@@ -241,7 +249,7 @@ $prelude = {
             [pscustomobject]@{Name="Sales Policy";Priority=1;RecipientFilter="Department -eq 'Sales'"
                 EnabledEmailAddressTemplates=@("SMTP:%m@sales.contoso.com","smtp:%g.%s@sales.contoso.com")}
             [pscustomobject]@{Name="Ops Policy";Priority=2;RecipientFilter="Department -eq 'Ops'"
-                EnabledEmailAddressTemplates=@("SMTP:%m@ops.contoso.com")}
+                EnabledEmailAddressTemplates=@("SMTP:%g.%s@ops.contoso.com")}
         )
         if ($Identity) { return ($all | Where-Object { $_.Name -eq $Identity }) }
         return $all }
@@ -291,6 +299,7 @@ Remove-Item (Join-Path $env:TEMP "erac_ous_fail.txt") -ErrorAction SilentlyConti
 Remove-Item (Join-Path $env:TEMP "erac_mbxstate_test.txt") -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $env:TEMP "erac_primary_noop.txt") -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $env:TEMP "erac_stale_replica.txt") -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $env:TEMP "erac_policies_fail.txt") -ErrorAction SilentlyContinue
 $job = Start-Job -ScriptBlock $prelude -ArgumentList $script,$Port
 foreach($i in 1..40){Start-Sleep -m 400; try{Invoke-WebRequest "$base/" -UseBasicParsing -TimeoutSec 3|Out-Null;break}catch{}}
 
@@ -885,7 +894,7 @@ try {
 
 # policy-managed mailboxes are refused with the reason
 Reset-Mbx
-Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=togglepolicy&policy=true" | Out-Null
+Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=togglepolicy&policy=true&confirmPolicyOn=yes" | Out-Null
 Start-Sleep -Milliseconds 250
 $x = Req GET "/editremotemailbox?id=o%27brien%40contoso.com"
 Check "the policy card shows policy-managed" ($x.Body -match 'Policy-managed') "state not shown"
@@ -931,7 +940,7 @@ try {
   # a change made through any other action must also survive the lag
   Reset-Mbx
   Set-Content -Path $staleF -Value "1"
-  $x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=togglepolicy&policy=true"
+  $x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=togglepolicy&policy=true&confirmPolicyOn=yes"
   Start-Sleep -Milliseconds 250
   Check "the re-rendered page reflects a policy change through the lag" ($x.Body -match 'Policy-managed') "card rendered from the lagging replica"
 } finally { Remove-Item $staleF -Force -EA SilentlyContinue }
@@ -1018,7 +1027,7 @@ Check "  the type badge actually has content" ($x.Body -match '<span class="badg
 $settings = [regex]::Match($x.Body, '(?s)<div class="card-header">Settings</div>.*?</ul>').Value
 Check "the three settings share one card" ($settings.Length -gt 0) "no Settings card"
 Check "  one list row each" (([regex]::Matches($settings, 'class="list-group-item')).Count -eq 3) "expected 3 rows"
-Check "  one form each" (([regex]::Matches($settings, '<form ')).Count -eq 3) "expected 3 forms"
+Check "  one control each" ((([regex]::Matches($settings, '<form ')).Count + ([regex]::Matches($settings, 'data-bs-target="#confirmPolicyOn"')).Count) -eq 3) "expected 3 controls"
 Check "  every control is a small outline button" (-not (@([regex]::Matches($settings, '<button[^>]*class="[^"]*"') | ForEach-Object { $_.Value }) | Where-Object { $_ -notmatch 'btn-outline-secondary btn-sm' })) "a settings button differs in size or style"
 Check "  every row uses the same column split" (([regex]::Matches($settings, 'col-md-3"><strong>')).Count -eq 3 -and ([regex]::Matches($settings, '<div class="col-md-6">')).Count -eq 3) "rows use different widths"
 Check "  the old separate cards are gone" ($x.Body -notmatch 'card-header">(Mailbox Type|Hidden from Address Lists|Email Address Policy)</div>') "an old card survived"
@@ -1046,7 +1055,7 @@ Check "  so the email field can validate" ($y.Body -notmatch 'value="SMTP:x@y') 
 # Add alias shares a toolbar row with the search box instead of sitting alone at the
 # far end of the card header.
 Check "address card header is just its title" ($x.Body -match '<div class="card-header">Email Addresses \(Proxy Addresses\)</div>') "header still carries controls"
-Check "  Add alias sits in a toolbar directly above the table" ($x.Body -match '(?s)<div[^>]*data-table-toolbar[^>]*>\s*<button[^>]*data-bs-target="#addAlias"[^>]*>Add alias</button>\s*</div>\s*<table class="table') "toolbar missing or not adjacent to the table"
+Check "  Add alias sits in a toolbar directly above the table" ($x.Body -match '(?s)<div[^>]*data-table-toolbar[^>]*>\s*<button[^>]*data-bs-target="#addAlias"[^>]*>Add alias</button>\s*</div>\s*<div class="table-responsive">\s*<table class="table') "toolbar missing or not adjacent to the table"
 Check "  at full size, level with the search box" ($x.Body -match '<button type="button" class="btn btn-primary flex-shrink-0"') "button size differs from the search input"
 $js = Req GET "/table-tools.js"
 Check "  and table-tools.js knows to join that toolbar" ($js.Body -match 'data-table-toolbar') "search box would still get its own row"
@@ -1081,6 +1090,109 @@ Check "the reversible group action is listed before the permanent one" ($y.Body.
 $y = Req GET "/editemailaddresspolicy?id=Sales%20Policy"
 Check "template help keeps the one rule inline" ($y.Body -match 'upper-case' -and $y.Body -match 'do not touch existing recipients') "rule or scope warning missing"
 Check "  and folds the token reference away" ($y.Body -match '(?s)<details[^>]*>\s*<summary>Template syntax</summary>.*?%1g.*?</details>') "token reference not in a details block"
+
+"`n=== 27. Turning policy management ON is confirmed, with a warning ==="
+# Turning it on lets Exchange re-stamp the addresses in the same write, replacing a
+# primary set by hand - so the page must say what the primary would become, and the
+# server must refuse an enable that skipped that.
+Reset-Mbx
+$x = Req GET "/editremotemailbox?id=o%27brien%40contoso.com"
+Check "Turn on opens a confirmation instead of posting" ($x.Body -match '<button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#confirmPolicyOn">Turn on policy management</button>') "not a modal trigger"
+$enableForms = @([regex]::Matches($x.Body, '(?s)<form\b(?:(?!</form>).)*?name="policy" value="true"(?:(?!</form>).)*?</form>') | ForEach-Object { $_.Value })
+Check "  exactly one form can turn it on" ($enableForms.Count -eq 1) "found $($enableForms.Count)"
+Check "  and it carries the confirmation" ($enableForms.Count -eq 1 -and $enableForms[0] -match 'name="confirmPolicyOn" value="yes"') "enable form lacks the confirmation"
+$modal = [regex]::Match($x.Body, '(?s)<div class="modal fade" id="confirmPolicyOn".*?</form>').Value
+Check "  the confirmation says the primary can change" ($modal -match 'This can change the primary address') "no warning"
+Check "  names the current primary" ($modal -match 'currently <strong>o&#39;brien@contoso\.com</strong>') "current primary not shown"
+Check "  shows what the default policy would stamp" ($modal -match 'SMTP:@contoso\.com</code> &rarr; <strong>ob@contoso\.com</strong>') "no resolved address for the default policy"
+Check "  resolves %m to the alias" ($modal -match 'SMTP:%m@sales\.contoso\.com</code> &rarr; <strong>ob@sales\.contoso\.com</strong>') "%m not resolved"
+Check "  shows a name-based template without guessing" ($modal -match 'SMTP:%g\.%s@ops\.contoso\.com</code></li>') "guessed at %g/%s or dropped it"
+Check "  in the order Exchange tries them" (($modal.IndexOf('Sales Policy') -lt $modal.IndexOf('Ops Policy')) -and ($modal.IndexOf('Ops Policy') -lt $modal.IndexOf('Default Policy'))) "default policy not last"
+Check "  warning is not an alert (can't pass for a banner)" ($modal -notmatch 'class="alert') "uses an alert class"
+Check "  confirm button is the warning colour" ($modal -match '<button type="submit" class="btn btn-warning">Turn on policy management</button>') "confirm button styled otherwise"
+
+# a request that skips the confirmation is refused, and nothing changes
+$x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=togglepolicy&policy=true"
+Check "enabling without the confirmation is refused" ($x.Body -match 'Policy management was not turned on') "no refusal"
+Check "  and the mailbox stays manual" ($x.Body -match 'Managed manually') "policy was turned on anyway"
+Check "  with its primary untouched" ($x.Body -match 'SMTP:o&#39;brien@contoso\.com') "primary changed"
+
+# confirmed: applied, and the banner reports what it did to the primary
+$x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=togglepolicy&policy=true&confirmPolicyOn=yes"
+Check "a confirmed enable reports the primary it replaced" ($x.Body -match 'the primary changed from o&#39;brien@contoso\.com to ob@contoso\.com') "banner: $((([regex]::Match($x.Body,'<div class=\"alert[^\"]*\"[^>]*>(.*?)</div>')).Groups[1].Value) -replace '\s+',' ')"
+Check "  the page follows the new primary" ($x.Body -match 'SMTP:ob@contoso\.com') "page rendered the old identity"
+Check "  shows policy-managed" ($x.Body -match 'Policy-managed') "state not shown"
+Check "  and drops the confirmation it no longer needs" ($x.Body -notmatch 'id="confirmPolicyOn"') "modal still rendered while on"
+
+# turning it OFF changes no address, so it needs no confirmation
+$x = Req POST "/editremotemailbox" "id=ob%40contoso.com&Action=togglepolicy&policy=false"
+Check "turning it off is one click" ($x.Body -match 'Policy management is off') "no confirmation expected here"
+Check "  and the confirmed path is offered again" ($x.Body -match 'data-bs-target="#confirmPolicyOn"') "no modal trigger after turning off"
+
+# the policy list failing must not break the page or leak the error text
+Reset-Mbx
+$polFail = Join-Path $env:TEMP "erac_policies_fail.txt"
+Set-Content -Path $polFail -Value "1"
+try {
+  $x = Req GET "/editremotemailbox?id=o%27brien%40contoso.com"
+  Check "the edit page survives the policy list failing" ($x.Status -eq 200 -and $x.Body.TrimStart().StartsWith('<!doctype')) "status=$($x.Status)"
+  Check "  the confirmation says it could not load them" ($x.Body -match 'Could not load the email address policies') "no explanation"
+  Check "  and the raw error is not rendered" ($x.Body -notmatch 'Active Directory operation failed') "error text reached the page"
+} finally { Remove-Item $polFail -Force -EA SilentlyContinue }
+
+"`n=== 28. List pages: one card, actions level with search, consistent labels ==="
+foreach ($pg in @(
+  @{u="/remotemailboxes";      t='enableMailbox';         label='Enable remote mailbox'},
+  @{u="/contacts";             t='addContact';            label='New contact'},
+  @{u="/emailaddresspolicies"; t='addEmailAddressPolicy'; label='New policy'},
+  @{u="/accepteddomains";      t='addAcceptedDomain';     label='New accepted domain'})) {
+  $y = Req GET $pg.u
+  Check "$($pg.u): primary action sits in a toolbar directly above the table" ($y.Body -match ('(?s)<div[^>]*data-table-toolbar[^>]*>\s*<button type="button" class="btn btn-primary flex-shrink-0"[^>]*data-bs-target="#' + $pg.t + '">' + [regex]::Escape($pg.label) + '</button>.*?</div>\s*<div class="table-responsive">\s*<table class="table')) "toolbar missing, mislabelled or not adjacent"
+  Check "  table and toolbar share one card" ($y.Body -match '(?s)<div class="card mb-4">\s*<div class="card-body">\s*<!--.*?-->\s*<div[^>]*data-table-toolbar') "not in a card"
+  Check "  no .nav wrapper squeezing the search box" ($y.Body -notmatch '<div class="nav">') "table still inside a flex .nav"
+  Check "  page header is one block" ($y.Body -match '(?s)<div class="pt-3 pb-2 mb-3 border-bottom">\s*<h2 class="h2">[^<]+</h2>\s*<p class="text-muted mb-1">') "header still split across flex rows"
+  $tc = @([regex]::Matches($y.Body, '<th scope="col">([^<]+)</th>') | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ -cmatch '\s[A-Z]' })
+  Check "  column headers in sentence case" ($tc.Count -eq 0) "title case: $($tc -join ', ')"
+}
+$y = Req GET "/distributiongroups"
+Check "/distributiongroups: actions are buttons, not links" ($y.Body -notmatch '<a class="btn') "still anchor-styled buttons"
+Check "  one primary action, the other outline" (($y.Body -match 'class="btn btn-primary" data-bs-toggle="modal"\s+data-bs-target="#addGroup">New group</button>') -and ($y.Body -match 'class="btn btn-outline-primary" data-bs-toggle="modal"\s+data-bs-target="#mailEnableGroup">Mail-enable a group</button>')) "hierarchy or labels wrong"
+Check "  tabs sit inside the card" ($y.Body -match '(?s)<div class="card mb-4">\s*<div class="card-body">.*?nav nav-tabs.*?id="nav-tabContent"') "tabs outside the card"
+$tc = @([regex]::Matches($y.Body, '<th scope="col">([^<]+)</th>') | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ -cmatch '\s[A-Z]' })
+Check "  column headers in sentence case" ($tc.Count -eq 0) "title case: $($tc -join ', ')"
+Check "  modal titles match their buttons" (($y.Body -match 'id="addGroupLabel">New group</h5>') -and ($y.Body -match 'id="mailEnableGroupLabel">Mail-enable a group</h5>')) "titles differ from buttons"
+
+$y = Req GET "/contacts";             Check "contacts: modal title matches its button" ($y.Body -match 'id="addContactLabel">New contact</h5>') "title differs"
+Check "  contact type is a badge" ($y.Body -match '<td><span class="badge bg-secondary">MailContact</span></td>') "plain text"
+$y = Req GET "/emailaddresspolicies"; Check "policies: modal title matches its button" ($y.Body -match 'id="addEmailAddressPolicyLabel">New policy</h5>') "title differs"
+Check "  recipient filter shown as code" ($y.Body -match '<td><code>Department -eq &#39;Sales&#39;</code></td>') "plain text"
+$y = Req GET "/accepteddomains";      Check "domains: modal title matches its button" ($y.Body -match 'id="addAcceptedDomainLabel">New accepted domain</h5>') "title differs"
+Check "  domain type is a badge" ($y.Body -match '<td><span class="badge bg-secondary">InternalRelay</span></td>') "plain text"
+$y = Req GET "/remotemailboxes";      Check "remote mailboxes: recipient type is a badge" ($y.Body -match '<td><span class="badge bg-secondary">RemoteUserMailbox</span></td>') "plain text"
+$js = Req GET "/table-tools.js"
+Check "search box wraps under the buttons rather than being squeezed" ($js.Body -match "input\.style\.flex = '1 1 12rem'") "no flex-basis on the toolbar search"
+
+"`n=== 29. Tables scroll inside their card, not the whole page ==="
+# At phone width a four-column table is wider than the screen; unwrapped, it dragged
+# the whole page sideways. Wrapped, it scrolls within its card - and the toolbar and
+# search box must still find it through the wrapper.
+foreach ($pg in @(@{u="/remotemailboxes";n=1},@{u="/contacts";n=1},@{u="/emailaddresspolicies";n=1},@{u="/accepteddomains";n=1},@{u="/distributiongroups";n=2},@{u="/editremotemailbox?id=o%27brien%40contoso.com";n=1})) {
+  $y = Req GET $pg.u
+  $all = ([regex]::Matches($y.Body, '<table class="table')).Count
+  $wrapped = ([regex]::Matches($y.Body, '<div class="table-responsive">\s*<table class="table')).Count
+  Check "$($pg.u.Split('?')[0]): every table wrapped ($($pg.n))" ($all -eq $pg.n -and $wrapped -eq $pg.n) "tables=$all wrapped=$wrapped"
+}
+$js = Req GET "/table-tools.js"
+Check "table-tools.js looks through the wrapper for the toolbar" ($js.Body -match "classList\.contains\('table-responsive'\)" -and $js.Body -match 'anchor\.previousElementSibling') "toolbar join would break inside the wrapper"
+
+"`n=== 30. Responses revalidate, so an update can't pair new HTML with an old script ==="
+# Static files went out with Last-Modified and no Cache-Control, so browsers applied
+# heuristic freshness and could keep using an old table-tools.js for hours after an
+# update - against HTML that now depends on the new one.
+foreach ($u in @("/remotemailboxes", "/editremotemailbox?id=o%27brien%40contoso.com", "/table-tools.js", "/danger-zone.js")) {
+  $cc = [string](Invoke-WebRequest -Uri "$base$u" -UseBasicParsing -TimeoutSec 20).Headers['Cache-Control']
+  Check "$($u.Split('?')[0]) is sent with Cache-Control: no-cache" ($cc -match 'no-cache') "Cache-Control='$cc'"
+}
 
 "`n================ $pass passed, $fail failed ================"
 try{Invoke-WebRequest "$base/exit" -UseBasicParsing -TimeoutSec 5|Out-Null}catch{}

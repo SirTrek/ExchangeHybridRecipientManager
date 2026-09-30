@@ -88,44 +88,37 @@
         </nav>
 
         <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
-          <div
-            class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+          <div class="pt-3 pb-2 mb-3 border-bottom">
             <h2 class="h2">Remote Mailboxes</h2>
-          </div>
-          <div
-            class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center">
-            <p>Manage the Active Directory attributes for your Exchange Online
-              mailboxes, using the supported Exchange Management Tools installed
-              on this machine</p>
+            <p class="text-muted mb-1">Manage the on-premises Active Directory attributes of your Exchange Online mailboxes.</p>
           </div>
           <!-- {result} -->
-          <div
-            class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center">
-            <div>
-              <button type="button" class="btn btn-primary" data-bs-toggle="modal"
-                data-bs-target="#enableMailbox">
-                Enable remote mailbox
-              </button>
-              <button type="button" class="btn btn-outline-primary"
-                data-bs-toggle="modal" data-bs-target="#newMailbox">
-                New shared mailbox
-              </button>
+          <div class="card mb-4">
+            <div class="card-body">
+              <!-- Actions and search share one row: table-tools.js adds its search
+                   box to this data-table-toolbar, after the buttons. -->
+              <div class="d-flex flex-wrap align-items-center gap-2 mb-2" data-table-toolbar>
+                <button type="button" class="btn btn-primary flex-shrink-0" data-bs-toggle="modal"
+                  data-bs-target="#enableMailbox">Enable remote mailbox</button>
+                <button type="button" class="btn btn-outline-primary flex-shrink-0"
+                  data-bs-toggle="modal" data-bs-target="#newMailbox">New shared mailbox</button>
+              </div>
+                <div class="table-responsive">
+                  <table class="table table-striped table-hover mb-0">
+                    <thead>
+                      <tr>
+                        <th scope="col">Display name</th>
+                        <th scope="col">Email address</th>
+                        <th scope="col">Recipient type</th>
+                        <th scope="col">Last modified</th>
+                      </tr>
+                    </thead>
+                    <tbody class="table-group-divider">
+                      <!-- {row_mbx} -->
+                    </tbody>
+                  </table>
+                </div>
             </div>
-          </div>
-          <div class="nav">
-            <table class="table table-striped table-hover">
-              <thead>
-                <tr>
-                  <th scope="col">Display Name</th>
-                  <th scope="col">Email address</th>
-                  <th scope="col">Recipient type</th>
-                  <th scope="col">Last modified</th>
-                </tr>
-              </thead>
-              <tbody class="table-group-divider">
-                <!-- {row_mbx} -->
-              </tbody>
-            </table>
           </div>
 
           <div class="modal fade" id="newMailbox" tabindex="-1"

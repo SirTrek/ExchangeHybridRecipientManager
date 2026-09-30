@@ -262,6 +262,87 @@ function Set-RemoteMailboxPrimaryAddress {
     return $After
 }
 
+function Get-PolicyOnConfirmModal {
+    # The confirmation behind "Turn on policy management". Turning it on is not a
+    # harmless toggle: Exchange re-stamps the mailbox's addresses from the policy that
+    # applies to it as part of the same write, replacing a primary address that was
+    # set by hand. So the warning lists the policies in the order Exchange tries them -
+    # numbered priorities first, the default (Lowest) last - each with its primary
+    # template and, where it can be worked out without the user's name, the address it
+    # would stamp. Only an empty local part or %m can be resolved (both mean the
+    # alias); %g, %s and the rest need the given name and surname, which
+    # Get-RemoteMailbox does not return, so those are shown and not guessed.
+    param($Mailbox, [string]$SafeId)
+
+    $Alias = [string]$Mailbox.Alias
+    $Current = ConvertTo-SafeHtml $Mailbox.PrimarySmtpAddress
+    $Rows = ""
+    try {
+        $Ordered = @(Get-EmailAddressPolicy -ErrorAction Stop) | Sort-Object @{ Expression = {
+                $P = [string]$_.Priority
+                $N = 0
+                if ($P -eq 'Lowest') { [int]::MaxValue }
+                elseif ([int]::TryParse($P, [ref]$N)) { $N }
+                else { [int]::MaxValue - 1 }
+            }
+        }
+        foreach ($Policy in $Ordered) {
+            $Primary = @(ConvertTo-AddressTemplateString $Policy.EnabledEmailAddressTemplates |
+                    Where-Object { $_ -cmatch '^SMTP:' }) | Select-Object -First 1
+            $Outcome = ""
+            if ($Alias -and $Primary -and $Primary -match '^SMTP:(?<local>[^@]*)@(?<domain>.+)$' -and
+                ($Matches['local'] -eq '' -or $Matches['local'] -eq '%m')) {
+                $Outcome = " &rarr; <strong>$(ConvertTo-SafeHtml "$Alias@$($Matches['domain'])")</strong>"
+            }
+            $Template = if ($Primary) { "<code>$(ConvertTo-SafeHtml $Primary)</code>" } else { "<em>no primary template</em>" }
+            $Rows += "`n<li><strong>$(ConvertTo-SafeHtml $Policy.Name)</strong> <span class=`"text-muted`">($(ConvertTo-SafeHtml $Policy.Priority))</span>: $Template$Outcome</li>"
+        }
+    }
+    catch {
+        # Write-Host, not a bare string: a bare string here would become part of the
+        # return value and be joined onto the page.
+        Write-Host "$(Get-Date -Format s) Could not list email address policies for the confirmation: $($_.Exception.Message)"
+        $Rows = "`n<li>Could not load the email address policies - see the console window.</li>"
+    }
+    if (-not $Rows) { $Rows = "`n<li>No email address policies were found.</li>" }
+
+    # Not an .alert: a static warning must not look like - or be matched as - a
+    # result banner.
+    return @"
+<div class="modal fade" id="confirmPolicyOn" tabindex="-1" aria-labelledby="confirmPolicyOnTitle" aria-hidden="true">
+<div class="modal-dialog modal-lg">
+<div class="modal-content">
+<form method="post" action="/editremotemailbox">
+<input type="hidden" name="id" value="$SafeId">
+<input type="hidden" name="Action" value="togglepolicy">
+<input type="hidden" name="policy" value="true">
+<input type="hidden" name="confirmPolicyOn" value="yes">
+<div class="modal-header">
+<h5 class="modal-title" id="confirmPolicyOnTitle">Turn on policy management?</h5>
+<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+</div>
+<div class="modal-body">
+<div class="bg-warning bg-opacity-25 rounded p-3 mb-3">
+<strong>This can change the primary address.</strong> Exchange re-stamps this mailbox's
+addresses from the email address policy that applies to it as part of turning this on,
+so its primary address &mdash; currently <strong>$Current</strong> &mdash; becomes
+whatever that policy generates. A primary address set by hand is replaced.
+</div>
+<p class="mb-2">Exchange applies the first of these whose recipient filter matches the mailbox:</p>
+<ul class="mb-0">$Rows
+</ul>
+</div>
+<div class="modal-footer">
+<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+<button type="submit" class="btn btn-warning">Turn on policy management</button>
+</div>
+</form>
+</div>
+</div>
+</div>
+"@
+}
+
 function Get-RemoteMailboxEditPage {
     # Renders editremotemailbox.html for a given mailbox identity. Shared by the
     # GET (initial view) and POST (after an update) handlers below.
@@ -360,17 +441,27 @@ function Get-RemoteMailboxEditPage {
     # Email address policy. Whether the primary address can be set by hand at all
     # depends on this, so it is surfaced next to the addresses rather than buried.
     $PolicyEnabled = [bool]$Mailbox.EmailAddressPolicyEnabled
+    $PolicyModal = ""
     if ($PolicyEnabled) {
         $PolicyBadgeClass = "bg-secondary"
         $PolicyStatusText = "Policy-managed"
-        $PolicyToggleValue = "false"
-        $PolicyToggleLabel = "Turn off policy management"
+        # Turning it off changes no address, so it stays one click.
+        $PolicyControl = @"
+<form method="post" action="/editremotemailbox">
+<input type="hidden" name="id" value="$SafeId">
+<input type="hidden" name="Action" value="togglepolicy">
+<input type="hidden" name="policy" value="false">
+<button type="submit" class="btn btn-outline-secondary btn-sm">Turn off policy management</button>
+</form>
+"@
     }
     else {
         $PolicyBadgeClass = "bg-warning text-dark"
         $PolicyStatusText = "Managed manually"
-        $PolicyToggleValue = "true"
-        $PolicyToggleLabel = "Turn on policy management"
+        # Turning it on can replace the primary address, so the button opens a warning
+        # that shows what each policy would stamp before anything is sent.
+        $PolicyControl = "<button type=`"button`" class=`"btn btn-outline-secondary btn-sm`" data-bs-toggle=`"modal`" data-bs-target=`"#confirmPolicyOn`">Turn on policy management</button>"
+        $PolicyModal = Get-PolicyOnConfirmModal -Mailbox $Mailbox -SafeId $SafeId
     }
 
     if ($Mailbox.HiddenFromAddressListsEnabled) {
@@ -396,8 +487,8 @@ function Get-RemoteMailboxEditPage {
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {row_type} -->", $HTMLROWS_TYPE)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{policy_badge_class}", $PolicyBadgeClass)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{policy_status_text}", $PolicyStatusText)
-    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{policy_toggle_value}", $PolicyToggleValue)
-    $HTMLRESPONSE = $HTMLRESPONSE.Replace("{policy_toggle_label}", $PolicyToggleLabel)
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {policy_control} -->", $PolicyControl)
+    $HTMLRESPONSE = $HTMLRESPONSE.Replace("<!-- {policy_modal} -->", $PolicyModal)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{hidden_badge_class}", $HiddenBadgeClass)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{hidden_status_text}", $HiddenStatusText)
     $HTMLRESPONSE = $HTMLRESPONSE.Replace("{hidden_toggle_value}", $HiddenToggleValue)
@@ -472,7 +563,7 @@ function Get-RemoteMailboxListPage {
         <th scope=`"row`">
         <a href=`"/editremotemailbox?id=$Href`">$(ConvertTo-SafeHtml $Item.DisplayName)</a></th>
         <td>$(ConvertTo-SafeHtml $Item.PrimarySMTPAddress)</td>
-        <td>$(ConvertTo-SafeHtml $Item.RecipientTypeDetails)</td>
+        <td><span class=`"badge bg-secondary`">$(ConvertTo-SafeHtml $Item.RecipientTypeDetails)</span></td>
         <td>$(ConvertTo-SafeHtml $Item.WhenChanged)</td>
         </tr>";
     }
@@ -509,7 +600,7 @@ function Get-AcceptedDomainsListPage {
         <th scope=`"row`">
         <a href=`"/editaccepteddomain?id=$Href`">$SafeName</a></th>
         <td>$(ConvertTo-SafeHtml $Item.DomainName)</td>
-        <td>$(ConvertTo-SafeHtml $Item.DomainType)</td>
+        <td><span class=`"badge bg-secondary`">$(ConvertTo-SafeHtml $Item.DomainType)</span></td>
         </tr>";
     }
 
@@ -521,7 +612,7 @@ function Get-AcceptedDomainsListPage {
 
 function Get-MailEnableCandidateGroup {
     # Active Directory groups that are not yet mail-enabled - the candidates for
-    # Mail-Enable a Group. Returns objects with Name and Dn.
+    # Mail-enable a group. Returns objects with Name and Dn.
     #
     # Queried over ADSI rather than with Get-Group: the Recipient Management snap-in
     # ships a reduced cmdlet set and does NOT include Get-Group ("The term 'Get-Group'
@@ -659,7 +750,7 @@ function Get-ContactsListPage {
         <th scope=`"row`">
         <a href=`"/editcontact?id=$Href`">$(ConvertTo-SafeHtml $Item.DisplayName)</a></th>
         <td>$(ConvertTo-SafeHtml $Item.PrimarySMTPAddress)</td>
-        <td>$(ConvertTo-SafeHtml $Item.RecipientType)</td>
+        <td><span class=`"badge bg-secondary`">$(ConvertTo-SafeHtml $Item.RecipientType)</span></td>
         </tr>";
     }
 
@@ -680,7 +771,7 @@ function Get-EmailAddressPoliciesListPage {
         <th scope=`"row`">
         <a href=`"/editemailaddresspolicy?id=$Href`">$(ConvertTo-SafeHtml $Item.Name)</a></th>
         <td>$(ConvertTo-SafeHtml $Item.Priority)</td>
-        <td>$(ConvertTo-SafeHtml $Item.RecipientFilter)</td>
+        <td><code>$(ConvertTo-SafeHtml $Item.RecipientFilter)</code></td>
         </tr>";
     }
 
@@ -1152,9 +1243,43 @@ try {
                         }
                         "togglepolicy" {
                             $NewPolicy = $params['policy'] -eq 'true'
+
+                            # Turning policy management ON lets Exchange re-stamp the
+                            # addresses from the policy in the same write, which replaces a
+                            # primary set by hand. The page confirms that with a warning
+                            # first; this re-check refuses a request that skipped it, the
+                            # same way the destructive actions re-check their typed text.
+                            if ($NewPolicy -and $params['confirmPolicyOn'] -ne 'yes') {
+                                $HTML_RESULT = $HTML_WARN.Replace("{result}", "Policy management was not turned on. Turning it on lets the email address policy re-stamp this mailbox's addresses, which can replace its primary address - use Turn on policy management under Settings, which shows what the primary would become first.")
+                                break
+                            }
+
+                            $BeforeToggle = Get-RemoteMailbox -Identity $Identity @GetDc -ErrorAction Stop
                             Set-RemoteMailbox -Identity $Identity -EmailAddressPolicyEnabled $NewPolicy @SetDc -ErrorAction Stop
-                            $PolicyNote = if ($NewPolicy) { "Exchange will stamp this mailbox's addresses from the policy again." } else { "This mailbox's addresses are now set by hand; the primary address can be changed." }
-                            $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Email address policy management is now $NewPolicy. $PolicyNote")
+
+                            if (-not $NewPolicy) {
+                                $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Policy management is off. This mailbox's addresses are now set by hand; the primary address can be changed.")
+                                break
+                            }
+
+                            # Report what the policy actually did rather than what it might
+                            # do. Re-read on something that survives a re-stamp - the old
+                            # primary may no longer be the primary - so key on the GUID
+                            # where the object carries one.
+                            $OldPrimary = [string]$BeforeToggle.PrimarySmtpAddress
+                            $StableId = if ($BeforeToggle.PSObject.Properties['Guid'] -and $BeforeToggle.Guid) { [string]$BeforeToggle.Guid } else { $Identity }
+                            $AfterToggle = Get-RemoteMailbox -Identity $StableId @GetDc -ErrorAction SilentlyContinue
+                            if (-not $AfterToggle) {
+                                $HTML_RESULT = $HTML_WARN.Replace("{result}", "Policy management is on, but the mailbox could not be read back to show what the policy did to its addresses. Check them before relying on the primary address.")
+                            }
+                            elseif ([string]$AfterToggle.PrimarySmtpAddress -ne $OldPrimary) {
+                                $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Policy management is on. The policy re-stamped the addresses: the primary changed from $(ConvertTo-SafeHtml $OldPrimary) to $(ConvertTo-SafeHtml $AfterToggle.PrimarySmtpAddress).")
+                                # The primary address is the identity this page is keyed on.
+                                $Identity = [string]$AfterToggle.PrimarySmtpAddress
+                            }
+                            else {
+                                $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Policy management is on. The primary address is unchanged: $(ConvertTo-SafeHtml $OldPrimary).")
+                            }
                             break
                         }
                         "togglehidden" {
@@ -1379,7 +1504,7 @@ try {
             }
 
             "POST /addaccepteddomain" {
-                # Process Add Accepted Domain - the "Add Accepted Domain" modal on
+                # Process Add Accepted Domain - the "New accepted domain" modal on
                 # accepteddomains.html posts here, but this route didn't exist
                 # (pre-existing gap, not something Set-AcceptedDomain covers since
                 # this is for a brand new domain, not editing an existing one).
@@ -1458,7 +1583,7 @@ try {
                 # Mail-disable: strips the Exchange attributes but keeps the AD group,
                 # its membership and anything it grants access to. The reversible
                 # counterpart to /deletedistributiongroup - the group can be mail-enabled
-                # again from the Mail-Enable a Group modal.
+                # again from the Mail-enable a group modal.
                 $params = ConvertFrom-HttpQuery (Read-RequestBody $REQUEST)
                 $Identity = $params['id']
 
@@ -1472,7 +1597,7 @@ try {
                     }
                     else {
                         Disable-DistributionGroup -Identity $Identity -Confirm:$false -ErrorAction Stop
-                        $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Distribution group $(ConvertTo-SafeHtml $Target.PrimarySmtpAddress) mail-disabled. The Active Directory group was kept and can be mail-enabled again from Mail-Enable a Group.")
+                        $HTML_RESULT = $HTML_SUCCESS.Replace("{result}", "Distribution group $(ConvertTo-SafeHtml $Target.PrimarySmtpAddress) mail-disabled. The Active Directory group was kept and can be mail-enabled again with Mail-enable a group on the Distribution Groups page.")
                     }
                 }
                 catch {
@@ -1539,7 +1664,7 @@ try {
             }
 
             "POST /adddistributiongroup" {
-                # "Add a Group" modal on distributiongroups.html. The form has always
+                # "New group" modal on distributiongroups.html. The form has always
                 # posted here; the route never existed, so every submission 404'd and
                 # discarded whatever the operator had typed.
                 $params = ConvertFrom-HttpQuery (Read-RequestBody $REQUEST)
@@ -1558,7 +1683,7 @@ try {
             }
 
             "POST /mailenablegroup" {
-                # "Mail-Enable a Group" modal on distributiongroups.html - same missing
+                # "Mail-enable a group" modal on distributiongroups.html - same missing
                 # route. Takes an existing, non-mail-enabled AD group and mail-enables it.
                 $params = ConvertFrom-HttpQuery (Read-RequestBody $REQUEST)
 
@@ -1575,7 +1700,7 @@ try {
             }
 
             "POST /addcontact" {
-                # "Add new contact" modal on contacts.html - same missing route.
+                # "New contact" modal on contacts.html - same missing route.
                 $params = ConvertFrom-HttpQuery (Read-RequestBody $REQUEST)
 
                 try {
@@ -1719,6 +1844,11 @@ try {
                             $FILENAME = Split-Path -Leaf $CHECKFILE
                             $RESPONSE.AddHeader("Content-Disposition", "attachment; filename=$FILENAME")
                         }
+                        # Revalidate on every use. With only Last-Modified, a browser applies
+                        # heuristic freshness and can reuse a script for hours after the files
+                        # are updated - pairing new HTML with an old table-tools.js, which is
+                        # exactly the mismatch that breaks the toolbar layout.
+                        $RESPONSE.AddHeader("Cache-Control", "no-cache")
                         $RESPONSE.AddHeader("Last-Modified", [IO.File]::GetLastWriteTime($CHECKFILE).ToString('r'))
                         $RESPONSE.AddHeader("Server", "Powershell Webserver/1.2 on ")
                         # ContentLength64 is set only once the bytes are in hand. Setting it
@@ -1749,6 +1879,7 @@ try {
             $RESPONSE.ContentType = "text/html; charset=utf-8"
             $RESPONSE.ContentLength64 = $BUFFER.Length
             $RESPONSE.AddHeader("Last-Modified", [DATETIME]::Now.ToString('r'))
+            $RESPONSE.AddHeader("Cache-Control", "no-cache")
             $RESPONSE.AddHeader("Server", "Powershell Webserver/1.2 on localhost")
             $RESPONSE.OutputStream.Write($BUFFER, 0, $BUFFER.Length)
         }

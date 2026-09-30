@@ -135,12 +135,12 @@
                 <div class="row align-items-center g-3">
                   <div class="col-md-6">
                     <strong>Mail-disable this group</strong>
-                    <div class="form-text mt-1">Removes the email address but keeps the Active Directory group, its members and anything it grants access to. Reversible &mdash; mail-enable it again with <em>Mail-Enable a Group</em> on the Distribution Groups page.</div>
+                    <div class="form-text mt-1">Removes the email address but keeps the Active Directory group, its members and anything it grants access to. Reversible &mdash; mail-enable it again with <em>Mail-enable a group</em> on the Distribution Groups page.</div>
                   </div>
                   <div class="col-md-6">
                     <form method="post" action="/disabledistributiongroup"
                       data-expect="{PrimarySmtpAddress}"
-                      data-confirm-message="Mail-disable the group {PrimarySmtpAddress}? The AD group is kept and this can be reversed with Mail-Enable a Group.">
+                      data-confirm-message="Mail-disable the group {PrimarySmtpAddress}? The AD group is kept and this can be reversed with Mail-enable a group.">
                       <input type="hidden" name="id" value="{PrimarySmtpAddress}">
                       <label for="confirmDisable" class="form-label small mb-1">Type
                         <strong>{PrimarySmtpAddress}</strong> to confirm</label>

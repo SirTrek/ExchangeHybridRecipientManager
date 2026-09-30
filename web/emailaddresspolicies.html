@@ -88,40 +88,34 @@
         </nav>
 
         <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
-          <div
-            class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+          <div class="pt-3 pb-2 mb-3 border-bottom">
             <h2 class="h2">Email Address Policies</h2>
-          </div>
-          <div
-            class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center">
-            <p>Email address policies define the rules that create email
-              addresses for recipients in your Exchange organization. Email
-              address policies in the Exchange Recipient Admin Center update the
-              local attributes for your Exchange Online mailboxes and affect the
-              email address format and the email addresses that mailboxes
-              have.</p>
+            <p class="text-muted mb-1">The rules that generate recipients' email addresses. Exchange applies the first policy whose recipient filter matches; the default policy is always last.</p>
           </div>
           <!-- {result} -->
-          <div
-            class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center mb-3">
-            <button type="button" class="btn btn-primary" data-bs-toggle="modal"
-              data-bs-target="#addEmailAddressPolicy">
-              Add email address policy
-            </button>
-          </div>
-          <div class="nav">
-            <table class="table table-striped table-hover">
-              <thead>
-                <tr>
-                  <th scope="col">Name</th>
-                  <th scope="col">Priority</th>
-                  <th scope="col">Recipient Filter</th>
-                </tr>
-              </thead>
-              <tbody class="table-group-divider">
-                <!-- {row} -->
-              </tbody>
-            </table>
+          <div class="card mb-4">
+            <div class="card-body">
+              <!-- Actions and search share one row: table-tools.js adds its search
+                   box to this data-table-toolbar, after the buttons. -->
+              <div class="d-flex flex-wrap align-items-center gap-2 mb-2" data-table-toolbar>
+                <button type="button" class="btn btn-primary flex-shrink-0" data-bs-toggle="modal"
+                  data-bs-target="#addEmailAddressPolicy">New policy</button>
+              </div>
+                <div class="table-responsive">
+                  <table class="table table-striped table-hover mb-0">
+                    <thead>
+                      <tr>
+                        <th scope="col">Name</th>
+                        <th scope="col">Priority</th>
+                        <th scope="col">Recipient filter</th>
+                      </tr>
+                    </thead>
+                    <tbody class="table-group-divider">
+                      <!-- {row} -->
+                    </tbody>
+                  </table>
+                </div>
+            </div>
           </div>
         </main>
       </div>
@@ -133,8 +127,7 @@
       <div class="modal-dialog">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title" id="addEmailAddressPolicyLabel">Add Email
-              Address Policy</h5>
+            <h5 class="modal-title" id="addEmailAddressPolicyLabel">New policy</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal"
               aria-label="Close"></button>
           </div>

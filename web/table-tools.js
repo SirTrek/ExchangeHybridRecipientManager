@@ -56,15 +56,22 @@
     // directly before it. The search box joins that row after the page's own buttons
     // and takes the remaining width, so actions and search read as one line. Without
     // a toolbar the search box gets a full-width row of its own, as before.
-    var toolbar = table.previousElementSibling;
+    // A table wrapped in .table-responsive is positioned by its wrapper, so look for
+    // the toolbar before the wrapper - and put a standalone search box there too,
+    // since inside it the search box would scroll sideways with the table.
+    var anchor = (table.parentElement && table.parentElement.classList.contains('table-responsive'))
+      ? table.parentElement : table;
+    var toolbar = anchor.previousElementSibling;
     if (toolbar && toolbar.hasAttribute('data-table-toolbar')) {
-      input.classList.add('flex-grow-1');
+      // Grow into the space the buttons leave, but wrap under them rather than be
+      // squeezed below 12rem when the page is narrow.
+      input.style.flex = '1 1 12rem';
       toolbar.appendChild(input);
     } else {
       var wrapper = document.createElement('div');
       wrapper.className = 'mb-2';
       wrapper.appendChild(input);
-      table.parentNode.insertBefore(wrapper, table);
+      anchor.parentNode.insertBefore(wrapper, anchor);
     }
 
     input.addEventListener('input', function () {

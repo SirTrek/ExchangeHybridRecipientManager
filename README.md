@@ -86,7 +86,11 @@ Two things follow from that, and both are handled:
   shows the state and toggles it; attempting to promote while it is on is refused up front
   with the reason rather than a cryptic Exchange error. Turning it off makes the addresses
   manual — they stop tracking the policy, so new namespaces are no longer added
-  automatically.
+  automatically. Turning it back **on** asks first: Exchange re-stamps the addresses from the
+  policy as part of that write, replacing a primary set by hand, so the confirmation lists
+  every policy in the order Exchange tries them with the address each would stamp (where it
+  can be worked out from the alias), and the server refuses an enable that skipped it. The
+  result is read back and reported — "the primary changed from X to Y" — not assumed.
 - **The result is read back, not assumed.** After the change the mailbox is re-read and the
   primary compared. If Exchange accepted the call without moving it, you get a warning saying
   so instead of a success banner over an unchanged mailbox.
@@ -168,7 +172,7 @@ where you actually want to work.
 .\Test-ExchangeRecipientAdminCenter.ps1
 ```
 
-301 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
+368 assertions. It boots the real server script against stubbed Exchange cmdlets and drives
 every route over real HTTP, so the whole request path is exercised rather than mocked. It
 needs no Exchange, no Active Directory and no admin rights, and it never issues an LDAP query
 — it is safe to run on the management box itself.
