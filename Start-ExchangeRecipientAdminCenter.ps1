@@ -226,7 +226,7 @@ function Set-RemoteMailboxPrimaryAddress {
     # rather than a cryptic refusal or a silent revert some time later. Guarded
     # with PSObject in case a build does not surface the property at all.
     if ($Before.PSObject.Properties['EmailAddressPolicyEnabled'] -and $Before.EmailAddressPolicyEnabled) {
-        throw "This mailbox's addresses are managed by an email address policy, so its primary address can't be set directly. Turn off policy management in the Email Address Policy card below, then try again."
+        throw "This mailbox's addresses are managed by an email address policy, so its primary address can't be set directly. Turn off policy management in the Address policy row under Settings, then try again."
     }
 
     Set-RemoteMailbox -Identity $Identity -PrimarySmtpAddress $Address @SetDc -ErrorAction Stop
@@ -290,11 +290,11 @@ function Get-RemoteMailboxEditPage {
         $SafeAddr = ConvertTo-SafeHtml $AddrString
         $IsPrimary = $AddrString.StartsWith("SMTP:")
         if ($IsPrimary) {
-            $Badge = "<span class=`"badge text-bg-primary`">Primary</span>"
+            $Badge = "<span class=`"badge bg-primary`">Primary</span>"
             $RemoveBtn = ""
         }
         else {
-            $Badge = "<span class=`"badge text-bg-secondary`">Alias</span>"
+            $Badge = "<span class=`"badge bg-secondary`">Alias</span>"
             # The confirmation text lives in a data- attribute rather than inline in the
             # confirm() call. Interpolating an address straight into confirm('...') let an
             # apostrophe (legal in an SMTP local part) terminate the string, which nulled
@@ -325,7 +325,7 @@ function Get-RemoteMailboxEditPage {
         <tr>
         <td>$SafeAddr</td>
         <td>$Badge</td>
-        <td>$PrimaryBtn$RemoveBtn</td>
+        <td class=`"text-end text-nowrap`">$PrimaryBtn$RemoveBtn</td>
         </tr>";
     }
 
@@ -338,30 +338,36 @@ function Get-RemoteMailboxEditPage {
         $HTMLROWS_TYPE += "`n<option$Sel value=`"$TypeName`">$TypeName</option>"
     }
 
+    # Badge classes are the Bootstrap 5.1 forms (bg-*, plus text-dark on the light
+    # warning colour). The text-bg-* helpers only arrived in 5.2; on the 5.1.3 the
+    # templates load, a .badge has white text and text-bg-* adds no background, so
+    # every status badge on this page rendered white-on-white and the controls beside
+    # them appeared to float at random offsets.
+    #
     # Email address policy. Whether the primary address can be set by hand at all
     # depends on this, so it is surfaced next to the addresses rather than buried.
     $PolicyEnabled = [bool]$Mailbox.EmailAddressPolicyEnabled
     if ($PolicyEnabled) {
-        $PolicyBadgeClass = "text-bg-secondary"
+        $PolicyBadgeClass = "bg-secondary"
         $PolicyStatusText = "Policy-managed"
         $PolicyToggleValue = "false"
         $PolicyToggleLabel = "Turn off policy management"
     }
     else {
-        $PolicyBadgeClass = "text-bg-warning"
+        $PolicyBadgeClass = "bg-warning text-dark"
         $PolicyStatusText = "Managed manually"
         $PolicyToggleValue = "true"
         $PolicyToggleLabel = "Turn on policy management"
     }
 
     if ($Mailbox.HiddenFromAddressListsEnabled) {
-        $HiddenBadgeClass = "text-bg-warning"
+        $HiddenBadgeClass = "bg-warning text-dark"
         $HiddenStatusText = "Hidden"
         $HiddenToggleValue = "false"
-        $HiddenToggleLabel = "Unhide from GAL"
+        $HiddenToggleLabel = "Show in GAL"
     }
     else {
-        $HiddenBadgeClass = "text-bg-success"
+        $HiddenBadgeClass = "bg-success"
         $HiddenStatusText = "Visible"
         $HiddenToggleValue = "true"
         $HiddenToggleLabel = "Hide from GAL"

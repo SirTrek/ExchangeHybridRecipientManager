@@ -878,7 +878,7 @@ $x = Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=makeprimar
 Start-Sleep -Milliseconds 250
 Check "a policy-managed mailbox is refused up front" ($x.Body -match 'managed by an email address policy') "no explanation given"
 Check "  and the cmdlet is never called" (-not (Test-Path $primF)) "Set-RemoteMailbox -PrimarySmtpAddress ran anyway"
-Check "  the refusal points at the way out" ($x.Body -match 'Email Address Policy card') "no remedy offered"
+Check "  the refusal points at the way out" ($x.Body -match 'under Settings') "no remedy offered"
 
 # turning it off then promoting works
 Req POST "/editremotemailbox" "id=o%27brien%40contoso.com&Action=togglepolicy&policy=false" | Out-Null
@@ -984,6 +984,37 @@ Start-Sleep -Milliseconds 200
 Check "a blank template field changes nothing" (-not (Test-Path $tmplF)) "blanked the policy's templates: $(Get-Content $tmplF -EA SilentlyContinue)"
 
 if (Test-Path $tmplF) { Remove-Item $tmplF -Force }
+
+"`n=== 25. Badges render on Bootstrap 5.1; settings controls line up ==="
+# The text-bg-* helpers arrived in Bootstrap 5.2. The templates load 5.1.3, where a
+# .badge has white text and text-bg-* adds no background - so every status badge on
+# the edit page rendered white-on-white, and the buttons beside them sat at whatever
+# offset the invisible text happened to be wide.
+$x = Req GET "/editremotemailbox?id=o%27brien%40contoso.com"
+Check "templates still load Bootstrap 5.1.x" ($x.Body -match 'bootstrap@5\.1\.') "Bootstrap version changed - revisit these assertions"
+Check "no text-bg-* anywhere on the edit page" ($x.Body -notmatch 'text-bg-') "text-bg-* is invisible on 5.1"
+$badges = @([regex]::Matches($x.Body, '<span class="badge[^"]*"') | ForEach-Object { $_.Value })
+Check "the page has badges" ($badges.Count -ge 4) "found $($badges.Count)"
+Check "  every badge has a bg-* colour" (-not ($badges | Where-Object { $_ -notmatch '\bbg-(primary|secondary|success|danger|warning|info|dark)\b' })) "no background: $(($badges | Where-Object { $_ -notmatch '\bbg-' }) -join ' ')"
+Check "  yellow badges use dark text" (-not ($badges | Where-Object { $_ -match 'bg-warning' -and $_ -notmatch 'text-dark' })) "white on yellow"
+Check "  the type badge actually has content" ($x.Body -match '<span class="badge bg-secondary">RemoteUserMailbox</span>') "type badge empty"
+
+$settings = [regex]::Match($x.Body, '(?s)<div class="card-header">Settings</div>.*?</ul>').Value
+Check "the three settings share one card" ($settings.Length -gt 0) "no Settings card"
+Check "  one list row each" (([regex]::Matches($settings, 'class="list-group-item')).Count -eq 3) "expected 3 rows"
+Check "  one form each" (([regex]::Matches($settings, '<form ')).Count -eq 3) "expected 3 forms"
+Check "  every control is a small outline button" (-not (@([regex]::Matches($settings, '<button[^>]*class="[^"]*"') | ForEach-Object { $_.Value }) | Where-Object { $_ -notmatch 'btn-outline-secondary btn-sm' })) "a settings button differs in size or style"
+Check "  every row uses the same column split" (([regex]::Matches($settings, 'col-md-3"><strong>')).Count -eq 3 -and ([regex]::Matches($settings, '<div class="col-md-6">')).Count -eq 3) "rows use different widths"
+Check "  the old separate cards are gone" ($x.Body -notmatch 'card-header">(Mailbox Type|Hidden from Address Lists|Email Address Policy)</div>') "an old card survived"
+Check "  GAL control says Show, not Unhide" ($x.Body -notmatch 'Unhide') "still says Unhide"
+Check "  actions column is labelled and right-aligned" ($x.Body -match '<th scope="col" class="text-end">Actions</th>') "actions header missing"
+Check "  action cells right-align and do not wrap" ($x.Body -match '<td class="text-end text-nowrap">') "cells not aligned"
+
+# the same bug class must not exist on any other page either
+foreach ($u in @("/remotemailboxes","/distributiongroups","/contacts","/emailaddresspolicies","/accepteddomains","/editdistributiongroup?id=o%27brien%40contoso.com","/editcontact?id=o%27brien%40contoso.com","/editemailaddresspolicy?id=Sales%20Policy","/editaccepteddomain?id=contoso.com")) {
+  $y = Req GET $u
+  Check "no text-bg-* on $u" ($y.Body -notmatch 'text-bg-') "text-bg-* present"
+}
 
 "`n================ $pass passed, $fail failed ================"
 try{Invoke-WebRequest "$base/exit" -UseBasicParsing -TimeoutSec 5|Out-Null}catch{}

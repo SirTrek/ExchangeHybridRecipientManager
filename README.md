@@ -58,7 +58,7 @@ in-memory log. For a regular mailbox, create the AD user however you normally do
 Shared, room and equipment mailboxes need no licence under 50 GB. Disable the backing AD
 account so nobody can sign in as the mailbox.
 
-Each mailbox's edit page also has a **Mailbox Type** card that calls
+Each mailbox's edit page also has a **Mailbox type** row under Settings that calls
 `Set-RemoteMailbox -Type`. That exists because converting a mailbox in the Exchange Online
 admin centre changes the *cloud* mailbox only: the type lives in `msExchRemoteRecipientType`
 on the on-premises AD object, which the cloud-side change never touches. Until both sides are
@@ -82,7 +82,7 @@ Two things follow from that, and both are handled:
 
 - **Address-policy-managed mailboxes refuse the change.** While an email address policy owns
   a mailbox, Exchange stamps its addresses and either rejects a manual primary or puts the
-  old one back on the next application. The **Email Address Policy** card on each mailbox
+  old one back on the next application. The **Address policy** row under Settings on each mailbox
   shows the state and toggles it; attempting to promote while it is on is refused up front
   with the reason rather than a cryptic Exchange error. Turning it off makes the addresses
   manual — they stop tracking the policy, so new namespaces are no longer added
