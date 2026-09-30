@@ -212,7 +212,7 @@ function Set-RemoteMailboxPrimaryAddress {
     # Promoting an address is NOT an EmailAddresses @{Add=...} operation.
     #
     # That collection is keyed on the address case-insensitively, so adding
-    # "SMTP:kelley@example.com" when "smtp:kelley@example.com" is already present
+    # "SMTP:someone@example.com" when "smtp:someone@example.com" is already present
     # matches the existing entry and changes nothing - no error, no change. The
     # prefix case carries the primary/alias distinction but is not part of the key,
     # so Add cannot move it. That is how a "primary address added" banner came to

@@ -843,7 +843,7 @@ try {
 if (Test-Path $nmLog) { Remove-Item $nmLog -Force }
 
 "`n=== 22. Changing the primary SMTP address (the reported failure) ==="
-# Reported: adding SMTP:kelley@everrest.us when smtp:kelley@everrest.us already
+# Reported: adding SMTP:someone@example.com when smtp:someone@example.com already
 # existed reported success and changed nothing. EmailAddresses is keyed on the
 # address case-insensitively, so @{Add=...} matched the existing entry and did
 # nothing; the prefix case carries primary/alias but is not part of the key.
@@ -980,15 +980,15 @@ Start-Sleep -Milliseconds 200
 Check "an unchanged template is not resent" (-not (Test-Path $tmplF)) "sent anyway: $(Get-Content $tmplF -EA SilentlyContinue)"
 
 # the actual change
-$x = Req POST "/editemailaddresspolicy" "Name=Default+Policy&EnabledEmailAddressTemplates=SMTP%3A%40maloufcompanies.com"
+$x = Req POST "/editemailaddresspolicy" "Name=Default+Policy&EnabledEmailAddressTemplates=SMTP%3A%40fabrikam.com"
 Start-Sleep -Milliseconds 200
-Check "a changed template IS sent" (@(Get-Content $tmplF -EA SilentlyContinue) -contains "Default Policy|SMTP:@maloufcompanies.com") "got: $(Get-Content $tmplF -EA SilentlyContinue)"
+Check "a changed template IS sent" (@(Get-Content $tmplF -EA SilentlyContinue) -contains "Default Policy|SMTP:@fabrikam.com") "got: $(Get-Content $tmplF -EA SilentlyContinue)"
 
 # several lines become several templates, and lower-case aliases survive
 Remove-Item $tmplF -Force -EA SilentlyContinue
-$x = Req POST "/editemailaddresspolicy" "Name=Default+Policy&EnabledEmailAddressTemplates=SMTP%3A%40maloufcompanies.com%0D%0Asmtp%3A%40everrest.us%0D%0A%0D%0Asmtp%3A%40linenspa.com"
+$x = Req POST "/editemailaddresspolicy" "Name=Default+Policy&EnabledEmailAddressTemplates=SMTP%3A%40fabrikam.com%0D%0Asmtp%3A%40tailspintoys.com%0D%0A%0D%0Asmtp%3A%40wingtiptoys.com"
 Start-Sleep -Milliseconds 200
-Check "multi-line input becomes an array, blanks dropped" (@(Get-Content $tmplF -EA SilentlyContinue) -contains "Default Policy|SMTP:@maloufcompanies.com;smtp:@everrest.us;smtp:@linenspa.com") "got: $(Get-Content $tmplF -EA SilentlyContinue)"
+Check "multi-line input becomes an array, blanks dropped" (@(Get-Content $tmplF -EA SilentlyContinue) -contains "Default Policy|SMTP:@fabrikam.com;smtp:@tailspintoys.com;smtp:@wingtiptoys.com") "got: $(Get-Content $tmplF -EA SilentlyContinue)"
 
 # exactly one primary, checked case-sensitively
 foreach ($case in @(
